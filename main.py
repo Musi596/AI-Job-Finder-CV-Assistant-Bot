@@ -8,6 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from dotenv import load_dotenv
+from sql import create_tables
 from services import * 
 from buttons import *
 
@@ -98,25 +99,73 @@ async def process_experience(message: Message, state: FSMContext):
     await state.update_data(expirience=message.text)
     data = await state.get_data()
     result = (
-        "**Анкета кандидата успешно заполнена!**\n\n"
-        f"**ФИО:* {data['name']}\n"
-        f"**Город:* {data['city']}\n"
-        f"**Телефон:* {data['phone_number']}\n"
-        f"**Должность:* {data['desired_position']}\n"
-        f"**Зарплата:* {data['desired_salary']}\n"
-        f"**Уровень:* {data['expirience_level']}\n"
-        f"**Навыки:* {data['skills']}\n"
-        f"**Образование:* {data['education']}\n"
-        f"**Языки:* {data['languages']}\n"
-        f"**Опыт работы:* {data['expirience']}"
+        "*Анкета кандидата успешно заполнена!*\n\n"
+        f"*ФИО:* {data['name']}\n"
+        f"*Город:* {data['city']}\n"
+        f"*Телефон:* {data['phone_number']}\n"
+        f"*Должность:* {data['desired_position']}\n"
+        f"*Зарплата:* {data['desired_salary']}\n"
+        f"*Уровень:* {data['expirience_level']}\n"
+        f"*Навыки:* {data['skills']}\n"
+        f"*Образование:* {data['education']}\n"
+        f"*Языки:* {data['languages']}\n"
+        f"*Опыт работы:* {data['expirience']}"
     )
     
     await message.answer(result, parse_mode="Markdown")
     await state.clear()  
 
+class employer(StatesGroup):
+    company = State()
+    industry = State()
+    city = State()
+    description = State()
+    contact_information = State()
 
+@dp.message(F.text == 'Работодатель')
+async def handler(message: Message, state: FSMContext):
+    await state.set_state(employer.company)
+    await message.answer('Название компании:')
+
+@dp.message(employer.company)
+async def process_company(message: Message, state: FSMContext):
+    await state.update_data(company=message.text)
+    await state.set_state(employer.industry)
+    await message.answer('Введите вашу отрасль:')
+
+@dp.message(employer.industry)
+async def process_industry(message: Message, state: FSMContext):
+    await state.update_data(industry=message.text)
+    await state.set_state(employer.city)
+    await message.answer('Введите город:')
+
+@dp.message(employer.city)
+async def process_city(message: Message, state: FSMContext):
+    await state.update_data(city=message.text)
+    await state.set_state(employer.description)
+    await message.answer('Введите описание:')
+@dp.message(employer.description)
+async def process_description(message: Message, state: FSMContext):
+    await state.update_data(description=message.text)
+    await state.set_state(employer.contact_information) 
+    await message.answer('Введите свои контакты:')
+
+@dp.message(employer.contact_information)
+async def process_contact(message: Message, state: FSMContext):
+    await state.update_data(contact_information=message.text)
+    data = await state.get_data()
+    result = (
+        "*Анкета работадатель успешно заполнена!*\n\n"
+        f"*Компания:* {data['company']}\n"
+        f"*Отрасль:* {data['industry']}\n"
+        f"*Город:* {data['city']}\n"
+        f"*Описание:* {data['description']}\n"
+        f"*Контактная информация:* {data['contact_information']}"
+    )
+    await message.answer(result, parse_mode="Markdown")
 
 async def main():
+    await create_tables()
     logging.info("Бот запускается...")
     await dp.start_polling(bot)
 

@@ -18,23 +18,36 @@ async def create_tables():
     db = await connection()
     try:
         await db.execute("""
-        create table if not exists users(
-            id serial primary key,
-            telegram_id bigint not null unique,
-            role varchar(20),
-            created_at timestamp default now()
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT NOT NULL UNIQUE,
+            role VARCHAR(20) not null,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        create table if not exists candidate_profiles(
-            name varchar(100) not null,
-            city varchar(50) not null,
-            phone_number varchar(50) not null,
-            desired_position varchar(100) not null,
-            desired_salary bigint,
-            experience_level varchar(50),
-            skills text,
-            education text not null,
-            languages text,
-            experience varchar(100)
+
+        CREATE TABLE IF NOT EXISTS candidate_profiles (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL UNIQUE REFERENCES users(telegram_id) ON DELETE CASCADE,
+            name VARCHAR(100) NOT NULL,
+            city VARCHAR(50) NOT NULL,
+            phone_number VARCHAR(50) NOT NULL,
+            desired_position VARCHAR(100) NOT NULL,
+            desired_salary BIGINT,
+            experience_level VARCHAR(50),
+            skills TEXT,
+            education TEXT NOT NULL,
+            languages TEXT,
+            experience TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS employer_profiles (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL UNIQUE REFERENCES users(telegram_id) ON DELETE CASCADE,
+            company_name VARCHAR(100) NOT NULL,
+            industry VARCHAR(200) NOT NULL,
+            city VARCHAR(50) NOT NULL,
+            description TEXT NOT NULL,
+            contact_information VARCHAR(50) NOT NULL
         );
         """)
         print('Tables created')
