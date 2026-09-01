@@ -24,6 +24,18 @@ async def create_tables():
             role varchar(20),
             created_at timestamp default now()
         );
+        create table if not exists candidate_profiles(
+            name varchar(100) not null,
+            city varchar(50) not null,
+            phone_number varchar(50) not null,
+            desired_position varchar(100) not null,
+            desired_salary bigint,
+            experience_level varchar(50),
+            skills text,
+            education text not null,
+            languages text,
+            experience varchar(100)
+        );
         """)
         print('Tables created')
     except Exception as er:
