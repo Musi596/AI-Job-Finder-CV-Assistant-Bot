@@ -5,14 +5,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def connection():
-    db = await asyncpg.connect(
+    return await asyncpg.connect(
         host='localhost',
         user='postgres',
         database='job_fainder_db',
         password=os.getenv('DB_PASSWORD'),
         port=5432
     )
-    return db
 
 async def create_tables():
     db = await connection()
@@ -21,7 +20,8 @@ async def create_tables():
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             telegram_id BIGINT NOT NULL UNIQUE,
-            role VARCHAR(20) not null,
+            role VARCHAR(20) NOT NULL,
+            is_blocked BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -47,11 +47,29 @@ async def create_tables():
             industry VARCHAR(200) NOT NULL,
             city VARCHAR(50) NOT NULL,
             description TEXT NOT NULL,
-            contact_information VARCHAR(50) NOT NULL
+            contact_information VARCHAR(100) NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS vacancies (
+            id SERIAL PRIMARY KEY,
+            employer_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+            company_name VARCHAR(100) NOT NULL,
+            title VARCHAR(500) NOT NULL,
+            description TEXT NOT NULL,
+            city VARCHAR(50) NOT NULL,
+            job_type VARCHAR(100) NOT NULL,
+            experience_level VARCHAR(50) NOT NULL,
+            required_skills TEXT NOT NULL,
+            salary_min BIGINT NOT NULL,
+            salary_max BIGINT NOT NULL,
+            requirements TEXT NOT NULL,
+            responsibilities TEXT NOT NULL,
+            status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('draft', 'active', 'closed')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        print('Tables created')
+        print('Таблицы успешно созданы')
     except Exception as er:
-        print(er)
+        print(f"Ошибка при создании таблиц: {er}")
     finally:
         await db.close()
