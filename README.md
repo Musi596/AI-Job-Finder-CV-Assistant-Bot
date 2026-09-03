@@ -13,7 +13,7 @@
 * **База данных:** PostgreSQL
 * **Драйвер БД:** `asyncpg` (полностью асинхронное взаимодействие с PostgreSQL)
 * **AI & LLM Integration:** `groq` (модель `llama-3.3-70b-versatile` для анализа CV)
-* **Конфигурация:** `python-dotenv`
+* **Конфигурация:** python-dotenv
 
 ---
 
