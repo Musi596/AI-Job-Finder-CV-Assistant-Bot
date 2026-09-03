@@ -17,7 +17,7 @@ def candidate_menu():
 def employer_menu():
     kb = [
         [KeyboardButton(text="Мои вакансии"), KeyboardButton(text="Создать вакансию")],
-        [KeyboardButton(text="Заполнить/Изменить компанию"), KeyboardButton(text="Профиль компании")]
+        [KeyboardButton(text="Заполнить/Изменить компанию"), KeyboardButton(text="Мой профиль компании")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -35,7 +35,7 @@ def confirm_keyboard():
 def vacancy_action_inline(vacancy_id: int, is_saved: bool = False, is_closed: bool = False):
     keyboard = []
     first_row = []
-    
+
     if not is_closed:
         first_row.append(InlineKeyboardButton(text="📩 Откликнуться", callback_data=f"vac_apply_{vacancy_id}"))
 
@@ -60,7 +60,7 @@ def candidate_action_inline(app_id: int, current_status: str):
     keyboard = [
         [
             InlineKeyboardButton(text="👤 Посмотреть профиль", callback_data=f"app_profile_{app_id}"),
-            InlineKeyboardButton(text="📄 Посмотреть резюме", callback_data=f"app_resume_{app_id}")
+            InlineKeyboardButton(text="📄 Анализ AI", callback_data=f"app_resume_{app_id}")
         ],
         [
             InlineKeyboardButton(text="🤝 Пригласить", callback_data=f"app_status_interview_{app_id}"),

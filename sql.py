@@ -55,7 +55,7 @@ async def create_tables():
             employer_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
             company_name VARCHAR(100) NOT NULL,
             title VARCHAR(500) NOT NULL,
-            description TEXT NOT NULL,
+            description TEXT DEFAULT '',
             city VARCHAR(50) NOT NULL,
             job_type VARCHAR(100) NOT NULL,
             experience_level VARCHAR(50) NOT NULL,
@@ -63,7 +63,7 @@ async def create_tables():
             salary_min BIGINT NOT NULL,
             salary_max BIGINT NOT NULL,
             requirements TEXT NOT NULL,
-            responsibilities TEXT NOT NULL,
+            responsibilities TEXT DEFAULT '',
             status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('draft', 'active', 'closed')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -168,6 +168,23 @@ async def save_employer_profile(telegram_id: int, data: dict):
     finally:
         await db.close()
 
+async def create_vacancy(employer_id: int, data: dict):
+    db = await connection()
+    try:
+        emp = await db.fetchrow("SELECT company_name FROM employer_profiles WHERE user_id = $1;", employer_id)
+        company_name = emp['company_name'] if emp else "Компания"
+
+        await db.execute("""
+            INSERT INTO vacancies (
+                employer_id, company_name, title, city, job_type,
+                experience_level, salary_min, salary_max, required_skills, requirements, description, responsibilities
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+        """, employer_id, company_name, data.get('title'), data.get('city'), data.get('job_type'),
+        data.get('experience_level'), int(data.get('salary_min', 0)), int(data.get('salary_max', 0)),
+        data.get('required_skills'), data.get('requirements'), data.get('requirements'), '')
+    finally:
+        await db.close()
+
 async def get_all_active_vacancies():
     db = await connection()
     try:
@@ -261,6 +278,7 @@ async def get_application_by_id(app_id: int):
                 a.status AS app_status,
                 a.candidate_id,
                 a.vacancy_id,
+                v.requirements AS vacancy_requirements,
                 cp.name,
                 cp.experience_level,
                 cp.skills,
@@ -273,6 +291,7 @@ async def get_application_by_id(app_id: int):
                 cp.phone_number
             FROM applications a
             JOIN candidate_profiles cp ON a.candidate_id = cp.user_id
+            JOIN vacancies v ON a.vacancy_id = v.id
             WHERE a.id = $1;
         """, app_id)
     finally:
@@ -291,8 +310,6 @@ async def update_application_status(app_id: int, new_status: str):
         return False
     finally:
         await db.close()
-
-# --- Сохранённые вакансии (Этап 9) ---
 
 async def save_vacancy(candidate_id: int, vacancy_id: int) -> bool:
     db = await connection()
@@ -344,8 +361,6 @@ async def get_saved_vacancies(candidate_id: int):
         """, candidate_id)
     finally:
         await db.close()
-
-# --- Загрузка и сохраненный текст CV (Этап 10) ---
 
 async def save_cv_file(candidate_id: int, file_path: str, original_file_name: str, extracted_text: str):
     db = await connection()

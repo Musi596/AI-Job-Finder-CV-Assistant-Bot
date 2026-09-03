@@ -1,54 +1,25 @@
-import asyncio
 import os
-import uuid
-
+import asyncio
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message, CallbackQuery
 from dotenv import load_dotenv
 
-from buttons import (
-    cancel_keyboard,
-    candidate_action_inline,
-    candidate_menu,
-    confirm_keyboard,
-    employer_menu,
-    employer_vacancies_inline,
-    start_buttons,
-    vacancy_action_inline,
-)
-from sql import (
-    create_application,
-    create_tables,
-    get_all_active_vacancies,
-    get_application_by_id,
-    get_applications_for_vacancy,
-    get_candidate_applications,
-    get_candidate_profile,
-    get_employer_profile,
-    get_employer_vacancies_with_app_count,
-    get_saved_vacancies,
-    is_already_applied,
-    is_vacancy_saved,
-    register_user,
-    save_candidate_profile,
-    save_cv_file,
-    save_employer_profile,
-    save_vacancy,
-    unsave_vacancy,
-    update_application_status,
-)
+from buttons import *
+from sql import create_tables
+import services
 
 load_dotenv()
-dp = Dispatcher()
+
 bot = Bot(token=os.getenv("BOT_TOKEN"))
+dp = Dispatcher(storage=MemoryStorage())
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# --- FSM Классы ---
 
-class CandidateFSM(StatesGroup):
+class CandidateProfileFSM(StatesGroup):
     name = State()
     city = State()
     phone_number = State()
@@ -59,521 +30,461 @@ class CandidateFSM(StatesGroup):
     education = State()
     languages = State()
     experience = State()
-    confirm = State()
 
-class CVUploadFSM(StatesGroup):
-    waiting_for_file = State()
-
-class EmployerFSM(StatesGroup):
+class EmployerProfileFSM(StatesGroup):
     company = State()
     industry = State()
     city = State()
     description = State()
     contact_information = State()
+
+class VacancyFSM(StatesGroup):
+    title = State()
+    city = State()
+    job_type = State()
+    experience_level = State()
+    salary_min = State()
+    salary_max = State()
+    required_skills = State()
+    requirements = State()
     confirm = State()
 
-STATUS_TRANSLATIONS = {
-    "submitted": "⏳ Отправлен",
-    "reviewing": "👀 На рассмотрении",
-    "interview": "🤝 Собеседование",
-    "accepted": "✅ Принят",
-    "rejected": "❌ Отклонен"
-}
+class CVUploadFSM(StatesGroup):
+    wait_file = State()
 
-def extract_text_from_txt(file_path: str) -> str:
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read().strip()
+# --- Системные и общие хэндлеры ---
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Добро пожаловать! Выберите вашу роль:", reply_markup=start_buttons())
 
 @dp.message(F.text == "❌ Отмена")
-async def cancel_handler(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is None:
-        await message.answer("Нечего отменять.", reply_markup=candidate_menu())
-        return
+async def process_cancel(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❌ Заполнение/загрузка прервана. Возврат в главное меню.", reply_markup=candidate_menu())
+    await message.answer("Действие отменено.", reply_markup=start_buttons())
 
-@dp.message(CommandStart())
-async def start_handler(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer('Выберите роль:', reply_markup=start_buttons())
+# --- Роли ---
 
-@dp.message(F.text == 'Кандидат')
-async def select_candidate_role(message: Message, state: FSMContext):
-    await register_user(message.from_user.id, 'Кандидат')
-    profile = await get_candidate_profile(message.from_user.id)
-    if profile:
-        await message.answer("Вы вошли как Кандидат.", reply_markup=candidate_menu())
-    else:
-        await message.answer("Начнем заполнение анкеты кандидата!\n1/10. Введите ФИО:", reply_markup=cancel_keyboard())
-        await state.set_state(CandidateFSM.name)
+@dp.message(F.text == "Кандидат")
+async def select_candidate(message: Message):
+    await services.register_candidate(message.from_user.id)
+    await message.answer("Вы вошли как Кандидат.", reply_markup=candidate_menu())
 
-@dp.message(F.text == 'Работодатель')
-async def select_employer_role(message: Message, state: FSMContext):
-    await register_user(message.from_user.id, 'Работодатель')
-    profile = await get_employer_profile(message.from_user.id)
-    if profile:
-        await message.answer("Вы вошли как Работодатель.", reply_markup=employer_menu())
-    else:
-        await message.answer("Начнем регистрацию компании!\n1/5. Введите название компании:", reply_markup=cancel_keyboard())
-        await state.set_state(EmployerFSM.company)
+@dp.message(F.text == "Работодатель")
+async def select_employer(message: Message):
+    await services.register_employer(message.from_user.id)
+    await message.answer("Вы вошли как Работодатель.", reply_markup=employer_menu())
 
-@dp.message(F.text == "📄 Загрузить резюме (TXT)")
-async def start_cv_upload(message: Message, state: FSMContext):
-    await message.answer(
-        "📎 Пожалуйста, отправьте ваш CV файл в формате **TXT**:",
-        parse_mode="Markdown",
-        reply_markup=cancel_keyboard()
-    )
-    await state.set_state(CVUploadFSM.waiting_for_file)
-
-@dp.message(CVUploadFSM.waiting_for_file, F.document)
-async def process_cv_file(message: Message, state: FSMContext):
-    doc = message.document
-    if not doc.file_name.lower().endswith(".txt"):
-        await message.answer("⚠️ Пожалуйста, загрузите документ в формате TXT.")
-        return
-
-    unique_filename = f"{uuid.uuid4().hex}_{doc.file_name}"
-    file_path = os.path.join(UPLOAD_DIR, unique_filename)
-
-    file_info = await bot.get_file(doc.file_id)
-    await bot.download_file(file_info.file_path, file_path)
-
-    try:
-        extracted_text = extract_text_from_txt(file_path)
-    except Exception as e:
-        await message.answer(f"❌ Ошибка при чтении TXT-файла: {e}", reply_markup=candidate_menu())
-        await state.clear()
-        return
-
-    if not extracted_text:
-        extracted_text = "Файл оказался пустым."
-
-    await save_cv_file(
-        candidate_id=message.from_user.id,
-        file_path=file_path,
-        original_file_name=doc.file_name,
-        extracted_text=extracted_text
-    )
-
-    await state.clear()
-    preview = extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else "")
-
-    await message.answer(
-        f"✅ **Файл успешно загружен и обработан!**\n\n"
-        f"📄 **Оригинальное имя:** `{doc.file_name}`\n\n"
-        f"🔍 **Извлечённый текст (предпросмотр):**\n\n```{preview}```",
-        parse_mode="Markdown",
-        reply_markup=candidate_menu()
-    )
-
-@dp.message(CVUploadFSM.waiting_for_file)
-async def invalid_cv_upload(message: Message):
-    await message.answer("⚠️ Пожалуйста, отправьте файл резюме (TXT) как документ.")
-
-@dp.message(F.text == "Заполнить/Изменить профиль")
-async def start_candidate_fsm(message: Message, state: FSMContext):
-    await message.answer('1/10. Введите полное имя (ФИО):', reply_markup=cancel_keyboard())
-    await state.set_state(CandidateFSM.name)
-
-@dp.message(CandidateFSM.name)
-async def process_cand_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await state.set_state(CandidateFSM.city)
-    await message.answer('2/10. Укажите ваш город:', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.city)
-async def process_cand_city(message: Message, state: FSMContext):
-    await state.update_data(city=message.text)
-    await state.set_state(CandidateFSM.phone_number)
-    await message.answer('3/10. Введите номер телефона или контактные данные:', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.phone_number)
-async def process_cand_phone(message: Message, state: FSMContext):
-    await state.update_data(phone_number=message.text)
-    await state.set_state(CandidateFSM.desired_position)
-    await message.answer('4/10. Укажите желаемую должность:', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.desired_position)
-async def process_cand_position(message: Message, state: FSMContext):
-    await state.update_data(desired_position=message.text)
-    await state.set_state(CandidateFSM.experience_level)
-    await message.answer('5/10. Укажите ваш уровень опыта (Junior / Middle / Senior):', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.experience_level)
-async def process_cand_exp_level(message: Message, state: FSMContext):
-    await state.update_data(experience_level=message.text)
-    await state.set_state(CandidateFSM.skills)
-    await message.answer('6/10. Перечислите ваши ключевые навыки:', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.skills)
-async def process_cand_skills(message: Message, state: FSMContext):
-    await state.update_data(skills=message.text)
-    await state.set_state(CandidateFSM.desired_salary)
-    await message.answer('7/10. Укажите ожидаемую зарплату (цифрами):', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.desired_salary)
-async def process_cand_salary(message: Message, state: FSMContext):
-    await state.update_data(desired_salary=message.text)
-    await state.set_state(CandidateFSM.education)
-    await message.answer('8/10. Укажите ваше образование:', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.education)
-async def process_cand_education(message: Message, state: FSMContext):
-    await state.update_data(education=message.text)
-    await state.set_state(CandidateFSM.languages)
-    await message.answer('9/10. Укажите владение языками:', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.languages)
-async def process_cand_languages(message: Message, state: FSMContext):
-    await state.update_data(languages=message.text)
-    await state.set_state(CandidateFSM.experience)
-    await message.answer('10/10. Опишите ваш подробный опыт работы:', reply_markup=cancel_keyboard())
-
-@dp.message(CandidateFSM.experience)
-async def process_cand_experience(message: Message, state: FSMContext):
-    await state.update_data(experience=message.text)
-    data = await state.get_data()
-    
-    result = (
-        "*Проверьте данные профиля кандидата:*\n\n"
-        f"1. *ФИО:* {data.get('name')}\n"
-        f"2. *Город:* {data.get('city')}\n"
-        f"3. *Контакты:* {data.get('phone_number')}\n"
-        f"4. *Должность:* {data.get('desired_position')}\n"
-        f"5. *Уровень:* {data.get('experience_level')}\n"
-        f"6. *Навыки:* {data.get('skills')}\n"
-        f"7. *Ожидаемая зарплата:* {data.get('desired_salary')}\n"
-        f"8. *Образование:* {data.get('education')}\n"
-        f"9. *Языки:* {data.get('languages')}\n"
-        f"10. *Опыт работы:* {data.get('experience')}"
-    )
-    await state.set_state(CandidateFSM.confirm)
-    await message.answer(result, parse_mode="Markdown", reply_markup=confirm_keyboard())
-
-@dp.message(CandidateFSM.confirm, F.text == "Подтвердить")
-async def confirm_candidate_profile(message: Message, state: FSMContext):
-    data = await state.get_data()
-    await save_candidate_profile(message.from_user.id, data)
-    await state.clear()
-    await message.answer("Профиль кандидата успешно сохранен в БД!", reply_markup=candidate_menu())
+# --- Профиль Кандидата ---
 
 @dp.message(F.text == "Мой профиль")
 async def show_candidate_profile(message: Message):
-    profile = await get_candidate_profile(message.from_user.id)
+    profile = await services.fetch_candidate(message.from_user.id)
     if not profile:
-        await message.answer("Ваш профиль не найден. Пожалуйста, заполните его.")
+        await message.answer("Профиль не заполнен. Нажмите 'Заполнить/Изменить профиль'.")
         return
     
-    result = (
-        "*Ваш профиль кандидата:*\n\n"
-        f"1. *ФИО:* {profile['name']}\n"
-        f"2. *Город:* {profile['city']}\n"
-        f"3. *Контакты:* {profile['phone_number']}\n"
-        f"4. *Желаемая должность:* {profile['desired_position']}\n"
-        f"5. *Уровень:* {profile['experience_level']}\n"
-        f"6. *Навыки:* {profile['skills']}\n"
-        f"7. *Зарплата:* {profile['desired_salary']}\n"
-        f"8. *Образование:* {profile['education']}\n"
-        f"9. *Языки:* {profile['languages']}\n"
-        f"10. *Опыт работы:* {profile['experience']}"
+    text = (
+        f"👤 *Имя:* {profile['name']}\n"
+        f"📍 *Город:* {profile['city']}\n"
+        f"📞 *Телефон:* {profile['phone_number']}\n"
+        f"💼 *Желаемая должность:* {profile['desired_position']}\n"
+        f"📊 *Уровень:* {profile['experience_level']}\n"
+        f"💰 *Ожидаемая ЗП:* {profile['desired_salary']} USD\n"
+        f"🛠 *Навыки:* {profile['skills']}\n"
+        f"🎓 *Образование:* {profile['education']}\n"
+        f"🌐 *Языки:* {profile['languages']}\n"
+        f"📝 *Опыт:* {profile['experience']}"
     )
-    await message.answer(result, parse_mode="Markdown")
-
-@dp.message(F.text == "Поиск вакансий")
-async def search_vacancies_handler(message: Message):
-    vacancies = await get_all_active_vacancies()
-    if not vacancies:
-        await message.answer("На данный момент активных вакансий нет.", reply_markup=candidate_menu())
-        return
-
-    for vac in vacancies:
-        is_saved = await is_vacancy_saved(message.from_user.id, vac['id'])
-        card = (
-            f"📌 *{vac['title']}*\n"
-            f"🏢 Компания: {vac['company_name']}\n"
-            f"📍 Город: {vac['city']}\n"
-            f"💼 Тип: {vac['job_type']} ({vac['experience_level']})\n"
-            f"💰 ЗП: {vac['salary_min']} - {vac['salary_max']}\n\n"
-            f"🛠 *Навыки:* {vac['required_skills']}\n"
-            f"📋 *Требования:* {vac['requirements']}"
-        )
-        await message.answer(
-            card,
-            parse_mode="Markdown",
-            reply_markup=vacancy_action_inline(vac['id'], is_saved=is_saved, is_closed=False)
-        )
-
-@dp.callback_query(F.data.startswith("vac_save_"))
-async def handle_save_vacancy(callback: CallbackQuery):
-    vacancy_id = int(callback.data.split("_")[2])
-    candidate_id = callback.from_user.id
-
-    await save_vacancy(candidate_id, vacancy_id)
-    await callback.answer("⭐️ Вакансия сохранена!", show_alert=True)
-    await callback.message.edit_reply_markup(
-        reply_markup=vacancy_action_inline(vacancy_id, is_saved=True, is_closed=False)
-    )
-
-@dp.callback_query(F.data.startswith("vac_unsave_"))
-async def handle_unsave_vacancy(callback: CallbackQuery):
-    vacancy_id = int(callback.data.split("_")[2])
-    candidate_id = callback.from_user.id
-
-    await unsave_vacancy(candidate_id, vacancy_id)
-    await callback.answer("❌ Вакансия удалена из сохранённых.", show_alert=True)
-    await callback.message.edit_reply_markup(
-        reply_markup=vacancy_action_inline(vacancy_id, is_saved=False, is_closed=False)
-    )
-
-@dp.message(F.text == "Сохранённые вакансии")
-async def show_saved_vacancies_handler(message: Message):
-    saved_vacs = await get_saved_vacancies(message.from_user.id)
-    if not saved_vacs:
-        await message.answer("У вас нет сохранённых вакансий.", reply_markup=candidate_menu())
-        return
-
-    await message.answer("⭐️ *Ваши сохранённые вакансии:*", parse_mode="Markdown")
-    for vac in saved_vacs:
-        card = (
-            f"📌 *{vac['title']}*\n"
-            f"🏢 Компания: {vac['company_name']}\n"
-            f"📍 Город: {vac['city']}\n"
-            f"💼 Тип: {vac['job_type']} ({vac['experience_level']})\n"
-            f"💰 ЗП: {vac['salary_min']} - {vac['salary_max']}\n\n"
-            f"🛠 *Навыки:* {vac['required_skills']}\n"
-            f"📋 *Требования:* {vac['requirements']}"
-        )
-        await message.answer(
-            card,
-            parse_mode="Markdown",
-            reply_markup=vacancy_action_inline(vac['id'], is_saved=True, is_closed=(vac['status'] == 'closed'))
-        )
-
-@dp.callback_query(F.data.startswith("vac_apply_"))
-async def apply_to_vacancy(callback: CallbackQuery):
-    vacancy_id = int(callback.data.split("_")[2])
-    candidate_id = callback.from_user.id
-
-    if await is_already_applied(vacancy_id, candidate_id):
-        await callback.answer("⚠️ Вы уже откликались на эту вакансию!", show_alert=True)
-        return
-
-    success = await create_application(vacancy_id, candidate_id)
-    if success:
-        await callback.answer("✅ Отклик успешно отправлен!", show_alert=True)
-    else:
-        await callback.answer("❌ Ошибка при отправке отклика.", show_alert=True)
-
-@dp.message(F.text == "Мои отклики")
-async def show_candidate_applications(message: Message):
-    apps = await get_candidate_applications(message.from_user.id)
-    if not apps:
-        await message.answer("У вас пока нет активных откликов.", reply_markup=candidate_menu())
-        return
-
-    text = "📋 *Ваши отклики на вакансии:*\n\n"
-    for app in apps:
-        status_human = STATUS_TRANSLATIONS.get(app['status'], app['status'])
-        date_str = app['created_at'].strftime("%d.%m.%Y %H:%M")
-        text += (
-            f"🏢 *{app['company_name']}* — {app['vacancy_title']}\n"
-            f"📊 Статус: `{status_human}`\n"
-            f"📅 Дата: {date_str}\n"
-            f"-----------------------------------\n"
-        )
     await message.answer(text, parse_mode="Markdown", reply_markup=candidate_menu())
 
-@dp.message(F.text == "Заполнить/Изменить компанию")
-async def start_employer_fsm(message: Message, state: FSMContext):
-    await message.answer('1/5. Название компании:', reply_markup=cancel_keyboard())
-    await state.set_state(EmployerFSM.company)
+@dp.message(F.text == "Заполнить/Изменить профиль")
+async def start_cand_profile(message: Message, state: FSMContext):
+    await state.set_state(CandidateProfileFSM.name)
+    await message.answer("Введите ваше полное имя:", reply_markup=cancel_keyboard())
 
-@dp.message(EmployerFSM.company)
+@dp.message(CandidateProfileFSM.name)
+async def process_cand_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await state.set_state(CandidateProfileFSM.city)
+    await message.answer("Укажите ваш город:")
+
+@dp.message(CandidateProfileFSM.city)
+async def process_cand_city(message: Message, state: FSMContext):
+    await state.update_data(city=message.text)
+    await state.set_state(CandidateProfileFSM.phone_number)
+    await message.answer("Укажите контактный номер телефона:")
+
+@dp.message(CandidateProfileFSM.phone_number)
+async def process_cand_phone(message: Message, state: FSMContext):
+    await state.update_data(phone_number=message.text)
+    await state.set_state(CandidateProfileFSM.desired_position)
+    await message.answer("Желаемая должность (например: Python Backend Developer):")
+
+@dp.message(CandidateProfileFSM.desired_position)
+async def process_cand_pos(message: Message, state: FSMContext):
+    await state.update_data(desired_position=message.text)
+    await state.set_state(CandidateProfileFSM.experience_level)
+    await message.answer("Ваш уровень (Junior, Middle, Senior):")
+
+@dp.message(CandidateProfileFSM.experience_level)
+async def process_cand_exp_lvl(message: Message, state: FSMContext):
+    await state.update_data(experience_level=message.text)
+    await state.set_state(CandidateProfileFSM.skills)
+    await message.answer("Ваши ключевые навыки (через запятую):")
+
+@dp.message(CandidateProfileFSM.skills)
+async def process_cand_skills(message: Message, state: FSMContext):
+    await state.update_data(skills=message.text)
+    await state.set_state(CandidateProfileFSM.desired_salary)
+    await message.answer("Ожидаемая зарплата (только число):")
+
+@dp.message(CandidateProfileFSM.desired_salary)
+async def process_cand_salary(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Пожалуйста, введите корректное число.")
+        return
+    await state.update_data(desired_salary=message.text)
+    await state.set_state(CandidateProfileFSM.education)
+    await message.answer("Образование:")
+
+@dp.message(CandidateProfileFSM.education)
+async def process_cand_edu(message: Message, state: FSMContext):
+    await state.update_data(education=message.text)
+    await state.set_state(CandidateProfileFSM.languages)
+    await message.answer("Владение языками:")
+
+@dp.message(CandidateProfileFSM.languages)
+async def process_cand_lang(message: Message, state: FSMContext):
+    await state.update_data(languages=message.text)
+    await state.set_state(CandidateProfileFSM.experience)
+    await message.answer("Кратко опишите ваш коммерческий/проектный опыт:")
+
+@dp.message(CandidateProfileFSM.experience)
+async def process_cand_exp(message: Message, state: FSMContext):
+    await state.update_data(experience=message.text)
+    data = await state.get_data()
+    await services.store_candidate_profile(message.from_user.id, data)
+    await state.clear()
+    await message.answer("Профиль успешно сохранен!", reply_markup=candidate_menu())
+
+# --- Загрузка Резюме (.txt) ---
+
+@dp.message(F.text == "📄 Загрузить резюме (TXT)")
+async def start_cv_upload(message: Message, state: FSMContext):
+    await state.set_state(CVUploadFSM.wait_file)
+    await message.answer("Отправьте ваш файл резюме в формате **.txt**:", reply_markup=cancel_keyboard())
+
+@dp.message(CVUploadFSM.wait_file, F.document)
+async def process_cv_file(message: Message, state: FSMContext):
+    doc = message.document
+    if not doc.file_name.endswith('.txt'):
+        await message.answer("Ошибка! Пожалуйста, отправьте файл в формате .txt")
+        return
+
+    os.makedirs("cv_uploads", exist_ok=True)
+    file_path = f"cv_uploads/{message.from_user.id}_{doc.file_name}"
+    
+    file_info = await bot.get_file(doc.file_id)
+    await bot.download_file(file_info.file_path, destination=file_path)
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        with open(file_path, "r", encoding="cp1251", errors="ignore") as f:
+            text = f.read()
+
+    await services.store_cv_file(message.from_user.id, file_path, doc.file_name, text)
+    await state.clear()
+    await message.answer("📄 Текст резюме успешно прочитан и сохранен!", reply_markup=candidate_menu())
+
+# --- Поиск и Отклики ---
+
+@dp.message(F.text == "Поиск вакансий")
+async def search_vacancies(message: Message):
+    vacancies = await services.fetch_active_vacancies()
+    if not vacancies:
+        await message.answer("Активных вакансий пока нет.")
+        return
+
+    for v in vacancies:
+        is_saved = await services.check_is_saved(message.from_user.id, v['id'])
+        msg = (
+            f"🏢 *{v['company_name']}*\n"
+            f"📌 *Вакансия:* {v['title']}\n"
+            f"📍 *Город:* {v['city']} ({v['job_type']})\n"
+            f"📊 *Уровень:* {v['experience_level']}\n"
+            f"💰 *ЗП:* {v['salary_min']} - {v['salary_max']}\n"
+            f"🛠 *Навыки:* {v['required_skills']}\n\n"
+            f"📋 *Требования:* {v['requirements']}"
+        )
+        await message.answer(msg, parse_mode="Markdown", reply_markup=vacancy_action_inline(v['id'], is_saved))
+
+@dp.callback_query(F.data.startswith("vac_apply_"))
+async def callback_apply(call: CallbackQuery):
+    vac_id = int(call.data.split("_")[2])
+    success = await services.apply_for_vacancy(vac_id, call.from_user.id)
+    if success:
+        await call.answer("Отклик успешно отправлен!", show_alert=True)
+    else:
+        await call.answer("Вы уже откликались на эту вакансию.", show_alert=True)
+
+@dp.callback_query(F.data.startswith("vac_save_"))
+async def callback_save(call: CallbackQuery):
+    vac_id = int(call.data.split("_")[2])
+    await services.add_saved_vacancy(call.from_user.id, vac_id)
+    await call.answer("Добавлено в сохранённые!")
+
+@dp.callback_query(F.data.startswith("vac_unsave_"))
+async def callback_unsave(call: CallbackQuery):
+    vac_id = int(call.data.split("_")[2])
+    await services.remove_saved_vacancy(call.from_user.id, vac_id)
+    await call.answer("Удалено из сохранённых!")
+
+@dp.message(F.text == "Сохранённые вакансии")
+async def show_saved_vacancies(message: Message):
+    vacancies = await services.fetch_saved_vacancies(message.from_user.id)
+    if not vacancies:
+        await message.answer("У вас нет сохранённых вакансий.")
+        return
+
+    for v in vacancies:
+        msg = (
+            f"⭐️ *{v['company_name']}* — {v['title']}\n"
+            f"📍 {v['city']} | 💰 {v['salary_min']}-{v['salary_max']}\n"
+            f"📋 {v['requirements']}"
+        )
+        await message.answer(msg, parse_mode="Markdown", reply_markup=vacancy_action_inline(v['id'], is_saved=True))
+
+@dp.message(F.text == "Мои отклики")
+async def show_my_applications(message: Message):
+    apps = await services.fetch_candidate_applications(message.from_user.id)
+    if not apps:
+        await message.answer("Вы еще никуда не откликались.")
+        return
+
+    res = "📋 *Ваши отклики:*\n\n"
+    for a in apps:
+        res += f"📌 *{a['vacancy_title']}* в {a['company_name']}\nСтатус: `{a['status']}`\n\n"
+    await message.answer(res, parse_mode="Markdown")
+
+# --- Работодатель ---
+
+@dp.message(F.text == "Мой профиль компании")
+async def show_employer_profile(message: Message):
+    profile = await services.fetch_employer(message.from_user.id)
+    if not profile:
+        await message.answer("Профиль компании не найден. Пожалуйста, заполните его.")
+        return
+
+    result = (
+        f"🏢 *Компания:* {profile['company_name']}\n"
+        f"🏭 *Отрасль:* {profile['industry']}\n"
+        f"📍 *Город:* {profile['city']}\n"
+        f"📝 *Описание:* {profile['description']}\n"
+        f"📞 *Контакты:* {profile['contact_information']}"
+    )
+    await message.answer(result, parse_mode="Markdown", reply_markup=employer_menu())
+
+@dp.message(F.text == "Заполнить/Изменить компанию")
+async def start_emp_profile(message: Message, state: FSMContext):
+    await state.set_state(EmployerProfileFSM.company)
+    await message.answer("Введите название компании:", reply_markup=cancel_keyboard())
+
+@dp.message(EmployerProfileFSM.company)
 async def process_emp_company(message: Message, state: FSMContext):
     await state.update_data(company=message.text)
-    await state.set_state(EmployerFSM.industry)
-    await message.answer('2/5. Отрасль компании:', reply_markup=cancel_keyboard())
+    await state.set_state(EmployerProfileFSM.industry)
+    await message.answer("Сфера деятельности / Отрасль:")
 
-@dp.message(EmployerFSM.industry)
-async def process_emp_industry(message: Message, state: FSMContext):
+@dp.message(EmployerProfileFSM.industry)
+async def process_emp_ind(message: Message, state: FSMContext):
     await state.update_data(industry=message.text)
-    await state.set_state(EmployerFSM.city)
-    await message.answer('3/5. Город:', reply_markup=cancel_keyboard())
+    await state.set_state(EmployerProfileFSM.city)
+    await message.answer("Город:")
 
-@dp.message(EmployerFSM.city)
+@dp.message(EmployerProfileFSM.city)
 async def process_emp_city(message: Message, state: FSMContext):
     await state.update_data(city=message.text)
-    await state.set_state(EmployerFSM.description)
-    await message.answer('4/5. Описание компании:', reply_markup=cancel_keyboard())
+    await state.set_state(EmployerProfileFSM.description)
+    await message.answer("Описание компании:")
 
-@dp.message(EmployerFSM.description)
+@dp.message(EmployerProfileFSM.description)
 async def process_emp_desc(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
-    await state.set_state(EmployerFSM.contact_information)
-    await message.answer('5/5. Контактная информация:', reply_markup=cancel_keyboard())
+    await state.set_state(EmployerProfileFSM.contact_information)
+    await message.answer("Контактные данные (email/телефон):")
 
-@dp.message(EmployerFSM.contact_information)
-async def process_emp_contact(message: Message, state: FSMContext):
+@dp.message(EmployerProfileFSM.contact_information)
+async def process_emp_contacts(message: Message, state: FSMContext):
     await state.update_data(contact_information=message.text)
     data = await state.get_data()
-    
+    await services.store_employer_profile(message.from_user.id, data)
+    await state.clear()
+    await message.answer("Профиль компании сохранен!", reply_markup=employer_menu())
+
+# --- FSM Создания Вакансии ---
+
+@dp.message(F.text == "Создать вакансию")
+async def start_vacancy_fsm(message: Message, state: FSMContext):
+    await state.set_state(VacancyFSM.title)
+    await message.answer("1/8. Введите название вакансии (например: Python Backend Developer):", reply_markup=cancel_keyboard())
+
+@dp.message(VacancyFSM.title)
+async def process_vac_title(message: Message, state: FSMContext):
+    await state.update_data(title=message.text)
+    await state.set_state(VacancyFSM.city)
+    await message.answer("2/8. Город работы (или 'Удаленно'):", reply_markup=cancel_keyboard())
+
+@dp.message(VacancyFSM.city)
+async def process_vac_city(message: Message, state: FSMContext):
+    await state.update_data(city=message.text)
+    await state.set_state(VacancyFSM.job_type)
+    await message.answer("3/8. Тип занятости (Full-time / Part-time / Remote):", reply_markup=cancel_keyboard())
+
+@dp.message(VacancyFSM.job_type)
+async def process_vac_job_type(message: Message, state: FSMContext):
+    await state.update_data(job_type=message.text)
+    await state.set_state(VacancyFSM.experience_level)
+    await message.answer("4/8. Требуемый уровень (Junior / Middle / Senior):", reply_markup=cancel_keyboard())
+
+@dp.message(VacancyFSM.experience_level)
+async def process_vac_exp_level(message: Message, state: FSMContext):
+    await state.update_data(experience_level=message.text)
+    await state.set_state(VacancyFSM.salary_min)
+    await message.answer("5/8. Минимальная зарплата (число):", reply_markup=cancel_keyboard())
+
+@dp.message(VacancyFSM.salary_min)
+async def process_vac_salary_min(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите число!")
+        return
+    await state.update_data(salary_min=message.text)
+    await state.set_state(VacancyFSM.salary_max)
+    await message.answer("6/8. Максимальная зарплата (число):", reply_markup=cancel_keyboard())
+
+@dp.message(VacancyFSM.salary_max)
+async def process_vac_salary_max(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите число!")
+        return
+    await state.update_data(salary_max=message.text)
+    await state.set_state(VacancyFSM.required_skills)
+    await message.answer("7/8. Ключевые навыки (через запятую):", reply_markup=cancel_keyboard())
+
+@dp.message(VacancyFSM.required_skills)
+async def process_vac_skills(message: Message, state: FSMContext):
+    await state.update_data(required_skills=message.text)
+    await state.set_state(VacancyFSM.requirements)
+    await message.answer("8/8. Подробные требования к кандидату:", reply_markup=cancel_keyboard())
+
+@dp.message(VacancyFSM.requirements)
+async def process_vac_requirements(message: Message, state: FSMContext):
+    await state.update_data(requirements=message.text)
+    data = await state.get_data()
+
     result = (
-        "*Проверьте данные профиля компании:*\n\n"
-        f"1. *Компания:* {data.get('company')}\n"
-        f"2. *Отрасль:* {data.get('industry')}\n"
-        f"3. *Город:* {data.get('city')}\n"
-        f"4. *Описание:* {data.get('description')}\n"
-        f"5. *Контакты:* {data.get('contact_information')}"
+        "*Проверьте данные вакансии:*\n\n"
+        f"📌 *Название:* {data.get('title')}\n"
+        f"📍 *Город:* {data.get('city')}\n"
+        f"💼 *Тип:* {data.get('job_type')}\n"
+        f"📊 *Уровень:* {data.get('experience_level')}\n"
+        f"💰 *ЗП:* {data.get('salary_min')} - {data.get('salary_max')}\n"
+        f"🛠 *Навыки:* {data.get('required_skills')}\n"
+        f"📋 *Требования:* {data.get('requirements')}"
     )
-    await state.set_state(EmployerFSM.confirm)
+    await state.set_state(VacancyFSM.confirm)
     await message.answer(result, parse_mode="Markdown", reply_markup=confirm_keyboard())
 
-@dp.message(EmployerFSM.confirm, F.text == "Подтвердить")
-async def confirm_employer_profile(message: Message, state: FSMContext):
+@dp.message(VacancyFSM.confirm, F.text == "Подтвердить")
+async def confirm_vacancy_creation(message: Message, state: FSMContext):
     data = await state.get_data()
-    await save_employer_profile(message.from_user.id, data)
+    await services.store_vacancy(message.from_user.id, data)
     await state.clear()
-    await message.answer("Профиль компании сохранен в БД!", reply_markup=employer_menu())
+    await message.answer("🎉 Вакансия успешно опубликована!", reply_markup=employer_menu())
+
+# --- Управление откликами работодателем ---
 
 @dp.message(F.text == "Мои вакансии")
-async def show_employer_vacancies_apps(message: Message):
-    vacancies = await get_employer_vacancies_with_app_count(message.from_user.id)
-    if not vacancies:
-        await message.answer("У вас пока нет созданных вакансий.", reply_markup=employer_menu())
+async def show_employer_vacancies(message: Message):
+    vacs = await services.fetch_employer_vacancies(message.from_user.id)
+    if not vacs:
+        await message.answer("У вас пока нет созданных вакансий.")
         return
 
-    await message.answer(
-        "📋 *Ваши вакансии:* Нажмите на вакансию, чтобы просмотреть отклики.",
-        parse_mode="Markdown",
-        reply_markup=employer_vacancies_inline(vacancies)
-    )
+    await message.answer("Выберите вакансию для просмотра откликов:", reply_markup=employer_vacancies_inline(vacs))
 
 @dp.callback_query(F.data.startswith("emp_vac_apps_"))
-async def list_vacancy_applications(callback: CallbackQuery):
-    vacancy_id = int(callback.data.split("_")[3])
-    apps = await get_applications_for_vacancy(vacancy_id)
-
+async def list_apps_for_vac(call: CallbackQuery):
+    vac_id = int(call.data.split("_")[3])
+    apps = await services.fetch_vacancy_applications(vac_id)
     if not apps:
-        await callback.answer("На эту вакансию пока нет откликов.", show_alert=True)
+        await call.answer("На эту вакансию пока нет откликов.", show_alert=True)
         return
 
-    await callback.answer()
-    await callback.message.answer(f"📥 *Откликов на вакансию: {len(apps)}*")
-
-    for app in apps:
-        matching_percent = "85%"
-        status_human = STATUS_TRANSLATIONS.get(app['app_status'], app['app_status'])
-
-        card = (
-            f"👤 *Имя:* {app['name']}\n"
-            f"🎯 *Процент соответствия:* `{matching_percent}`\n"
-            f"💼 *Уровень опыта:* {app['experience_level']}\n"
-            f"📊 *Статус:* {status_human}"
+    await call.message.answer(f"📥 *Отклики на вакансию:*", parse_mode="Markdown")
+    for a in apps:
+        msg = (
+            f"👤 *Кандидат:* {a['name']}\n"
+            f"🎯 *Должность:* {a['desired_position']}\n"
+            f"📊 *Уровень:* {a['experience_level']}\n"
+            f"📌 *Статус отклика:* `{a['app_status']}`"
         )
-
-        await callback.message.answer(
-            card,
-            parse_mode="Markdown",
-            reply_markup=candidate_action_inline(app['app_id'], app['app_status'])
-        )
+        await call.message.answer(msg, parse_mode="Markdown", reply_markup=candidate_action_inline(a['app_id'], a['app_status']))
 
 @dp.callback_query(F.data.startswith("app_profile_"))
-async def view_candidate_profile(callback: CallbackQuery):
-    app_id = int(callback.data.split("_")[2])
-    app = await get_application_by_id(app_id)
-
-    if not app:
-        await callback.answer("Отклик не найден.", show_alert=True)
+async def view_app_profile(call: CallbackQuery):
+    app_id = int(call.data.split("_")[2])
+    app_data = await services.fetch_application(app_id)
+    if not app_data:
+        await call.answer("Отклик не найден.")
         return
 
-    if app['app_status'] in ['interview', 'accepted']:
-        contact_info = app['phone_number']
-    else:
-        contact_info = "🔒 *Скрыто до приглашения на собеседование*"
-
-    profile_text = (
-        f"👤 *Профиль кандидата: {app['name']}*\n\n"
-        f"📍 *Город:* {app['city']}\n"
-        f"💼 *Уровень:* {app['experience_level']}\n"
-        f"🎯 *Желаемая должность:* {app['desired_position']}\n"
-        f"💰 *Ожидаемая ЗП:* {app['desired_salary']}\n"
-        f"🎓 *Образование:* {app['education']}\n"
-        f"🌐 *Языки:* {app['languages']}\n"
-        f"📞 *Контакты:* {contact_info}"
+    msg = (
+        f"👤 *Кандидат:* {app_data['name']}\n"
+        f"📞 *Телефон:* {app_data['phone_number']}\n"
+        f"📍 *Город:* {app_data['city']}\n"
+        f"💼 *Желаемая позиция:* {app_data['desired_position']}\n"
+        f"💰 *Ожидаемая ЗП:* {app_data['desired_salary']}\n"
+        f"🎓 *Образование:* {app_data['education']}\n"
+        f"🛠 *Навыки:* {app_data['skills']}\n"
+        f"🌐 *Языки:* {app_data['languages']}\n"
+        f"📝 *Опыт:* {app_data['experience']}"
     )
-
-    await callback.answer()
-    await callback.message.answer(profile_text, parse_mode="Markdown")
+    await call.message.answer(msg, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("app_resume_"))
-async def view_candidate_resume(callback: CallbackQuery):
-    app_id = int(callback.data.split("_")[2])
-    app = await get_application_by_id(app_id)
-
-    if not app:
-        await callback.answer("Отклик не найден.", show_alert=True)
+async def analyze_app_resume(call: CallbackQuery):
+    app_id = int(call.data.split("_")[2])
+    app_data = await services.fetch_application(app_id)
+    
+    cv_file = await services.fetch_latest_cv(app_data['candidate_id'])
+    if not cv_file:
+        await call.answer("Кандидат не прикрепил файл резюме (.txt).", show_alert=True)
         return
 
-    resume_text = (
-        f"📄 *Резюме и Опыт работы ({app['name']}):*\n\n"
-        f"🛠 *Ключевые навыки:* {app['skills']}\n\n"
-        f"📋 *Подробный опыт:* {app['experience']}"
-    )
-
-    await callback.answer()
-    await callback.message.answer(resume_text, parse_mode="Markdown")
+    await call.answer("AI анализирует резюме...")
+    ai_result = await services.analyze_resume_with_ai(cv_file['extracted_text'], app_data['vacancy_requirements'])
+    await call.message.answer(f"🤖 *Анализ соответствия от Groq AI:*\n\n{ai_result}", parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("app_status_"))
-async def change_application_status(callback: CallbackQuery):
-    parts = callback.data.split("_")
+async def change_status(call: CallbackQuery):
+    parts = call.data.split("_")
     new_status = parts[2]
     app_id = int(parts[3])
 
-    app = await get_application_by_id(app_id)
-    if not app:
-        await callback.answer("Отклик не найден.", show_alert=True)
-        return
+    await services.change_application_status(app_id, new_status)
+    status_text = "Приглашен" if new_status == "interview" else "Отклонен"
+    await call.answer(f"Статус изменен: {status_text}")
+    await call.message.edit_text(f"{call.message.text}\n\n✅ *Обновленный статус:* `{new_status}`", parse_mode="Markdown")
 
-    success = await update_application_status(app_id, new_status)
-    if success:
-        if new_status == 'interview':
-            await callback.answer("✅ Кандидат приглашен! Контакты открыты.", show_alert=True)
-            try:
-                await bot.send_message(
-                    chat_id=app['candidate_id'],
-                    text="🎉 Вас пригласили на собеседование!"
-                )
-            except Exception:
-                pass
-        elif new_status == 'rejected':
-            await callback.answer("❌ Отклик отклонен.", show_alert=True)
-            try:
-                await bot.send_message(
-                    chat_id=app['candidate_id'],
-                    text="К сожалению, ваш отклик был отклонен."
-                )
-            except Exception:
-                pass
-
-        status_human = STATUS_TRANSLATIONS.get(new_status, new_status)
-        await callback.message.edit_text(
-            f"👤 *Имя:* {app['name']}\n"
-            f"🎯 *Процент соответствия:* `85%`\n"
-            f"💼 *Уровень опыта:* {app['experience_level']}\n"
-            f"📊 *Статус:* {status_human}",
-            parse_mode="Markdown",
-            reply_markup=candidate_action_inline(app_id, new_status)
-        )
+# --- Запуск приложения ---
 
 async def main():
     await create_tables()
-    print("Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as er:
-        print(f"Ошибка запуска: {er}")
+    asyncio.run(main())
