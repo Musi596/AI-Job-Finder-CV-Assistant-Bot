@@ -6,11 +6,11 @@ load_dotenv()
 
 async def connection():
     return await asyncpg.connect(
-        host=os.getenv('DB_HOST', 'localhost'),
-        user=os.getenv('DB_USER', 'postgres'),
-        database=os.getenv('DB_NAME', 'job_fainder_db'),
-        password=os.getenv('DB_PASSWORD'),
-        port=int(os.getenv('DB_PORT', 5432))
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT")
     )
 
 async def create_tables():
@@ -67,18 +67,130 @@ async def create_tables():
             status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('draft', 'active', 'closed')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+
         CREATE TABLE IF NOT EXISTS applications (
             id SERIAL PRIMARY KEY,
             vacancy_id INT NOT NULL REFERENCES vacancies(id) ON DELETE CASCADE,
             candidate_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
-            cover_letter TEXT,
-            status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+            status VARCHAR(20) DEFAULT 'submitted' CHECK (status IN ('submitted', 'reviewing', 'interview', 'accepted', 'rejected')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(vacancy_id, candidate_id) -- Защита от повторных откликов на одну и ту же вакансию
+            UNIQUE(vacancy_id, candidate_id)
         );
         """)
         print('Таблицы успешно созданы')
     except Exception as er:
         print(f"Ошибка при создании таблиц: {er}")
+    finally:
+        await db.close()
+
+async def register_user(telegram_id: int, role: str):
+    db = await connection()
+    try:
+        await db.execute("""
+            INSERT INTO users (telegram_id, role)
+            VALUES ($1, $2)
+            ON CONFLICT (telegram_id) DO UPDATE SET role = EXCLUDED.role;
+        """, telegram_id, role)
+    finally:
+        await db.close()
+
+async def get_candidate_profile(telegram_id: int):
+    db = await connection()
+    try:
+        return await db.fetchrow("SELECT * FROM candidate_profiles WHERE user_id = $1;", telegram_id)
+    finally:
+        await db.close()
+
+async def save_candidate_profile(telegram_id: int, data: dict):
+    db = await connection()
+    try:
+        await db.execute("""
+            INSERT INTO candidate_profiles (
+                user_id, name, city, phone_number, desired_position,
+                experience_level, skills, desired_salary, education, languages, experience
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (user_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                city = EXCLUDED.city,
+                phone_number = EXCLUDED.phone_number,
+                desired_position = EXCLUDED.desired_position,
+                experience_level = EXCLUDED.experience_level,
+                skills = EXCLUDED.skills,
+                desired_salary = EXCLUDED.desired_salary,
+                education = EXCLUDED.education,
+                languages = EXCLUDED.languages,
+                experience = EXCLUDED.experience;
+        """, telegram_id, data.get('name'), data.get('city'), data.get('phone_number'),
+        data.get('desired_position'), data.get('experience_level'), data.get('skills'),
+        int(data.get('desired_salary', 0)), data.get('education'), data.get('languages'), data.get('experience'))
+    finally:
+        await db.close()
+
+async def get_employer_profile(telegram_id: int):
+    db = await connection()
+    try:
+        return await db.fetchrow("SELECT * FROM employer_profiles WHERE user_id = $1;", telegram_id)
+    finally:
+        await db.close()
+
+async def save_employer_profile(telegram_id: int, data: dict):
+    db = await connection()
+    try:
+        await db.execute("""
+            INSERT INTO employer_profiles (
+                user_id, company_name, industry, city, description, contact_information
+            ) VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (user_id) DO UPDATE SET
+                company_name = EXCLUDED.company_name,
+                industry = EXCLUDED.industry,
+                city = EXCLUDED.city,
+                description = EXCLUDED.description,
+                contact_information = EXCLUDED.contact_information;
+        """, telegram_id, data.get('company'), data.get('industry'), data.get('city'),
+        data.get('description'), data.get('contact_information'))
+    finally:
+        await db.close()
+
+async def get_all_active_vacancies():
+    db = await connection()
+    try:
+        return await db.fetch("SELECT * FROM vacancies WHERE status = 'active' ORDER BY created_at DESC;")
+    finally:
+        await db.close()
+
+async def is_already_applied(vacancy_id: int, candidate_id: int) -> bool:
+    db = await connection()
+    try:
+        row = await db.fetchrow(
+            "SELECT 1 FROM applications WHERE vacancy_id = $1 AND candidate_id = $2;",
+            vacancy_id, candidate_id
+        )
+        return row is not None
+    finally:
+        await db.close()
+
+async def create_application(vacancy_id: int, candidate_id: int) -> bool:
+    db = await connection()
+    try:
+        await db.execute(
+            "INSERT INTO applications (vacancy_id, candidate_id) VALUES ($1, $2);",
+            vacancy_id, candidate_id
+        )
+        return True
+    except Exception:
+        return False
+    finally:
+        await db.close()
+
+async def get_candidate_applications(candidate_id: int):
+    db = await connection()
+    try:
+        return await db.fetch("""
+            SELECT a.status, a.created_at, v.title AS vacancy_title, v.company_name
+            FROM applications a
+            JOIN vacancies v ON a.vacancy_id = v.id
+            WHERE a.candidate_id = $1
+            ORDER BY a.created_at DESC;
+        """, candidate_id)
     finally:
         await db.close()

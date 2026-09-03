@@ -1,29 +1,37 @@
 import asyncio
-import logging
-logging.basicConfig(level=logging.INFO)
 import os
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
 from dotenv import load_dotenv
 
-from sql import create_tables
-from services import (
-    register_user, save_candidate_profile, get_candidate_profile,
-    save_employer_profile, get_employer_profile, save_vacancy,
-    get_employer_vacancies, close_vacancy
-)
 from buttons import (
-    start_buttons, candidate_menu, employer_menu,
-    confirm_keyboard, vacancy_status_keyboard, vacancy_action_inline
+    cancel_keyboard,
+    candidate_menu,
+    confirm_keyboard,
+    employer_menu,
+    start_buttons,
+    vacancy_action_inline,
+)
+from sql import (
+    create_application,
+    create_tables,
+    get_all_active_vacancies,
+    get_candidate_applications,
+    get_candidate_profile,
+    get_employer_profile,
+    is_already_applied,
+    register_user,
+    save_candidate_profile,
+    save_employer_profile,
 )
 
 load_dotenv()
 dp = Dispatcher()
-bot = Bot(os.getenv("BOT_TOKEN"))
+bot = Bot(token=os.getenv("BOT_TOKEN"))
 
 class CandidateFSM(StatesGroup):
     name = State()
@@ -38,7 +46,6 @@ class CandidateFSM(StatesGroup):
     experience = State()
     confirm = State()
 
-# 2. Работодатель (5 шагов)
 class EmployerFSM(StatesGroup):
     company = State()
     industry = State()
@@ -47,23 +54,14 @@ class EmployerFSM(StatesGroup):
     contact_information = State()
     confirm = State()
 
-# 3. Вакансия (11 полей)
-class VacancyFSM(StatesGroup):
-    title = State()
-    description = State()
-    city = State()
-    job_type = State()
-    experience_level = State()
-    required_skills = State()
-    salary_min = State()
-    salary_max = State()
-    requirements = State()
-    responsibilities = State()
-    status = State()
-    confirm = State()
-
-
-# === СТАРТ И ВЫБОР РОЛИ ===
+@dp.message(F.text == "❌ Отмена")
+async def cancel_handler(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.answer("Нечего отменять.", reply_markup=candidate_menu())
+        return
+    await state.clear()
+    await message.answer("❌ Заполнение прервано. Возврат в главное меню.", reply_markup=candidate_menu())
 
 @dp.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
@@ -77,7 +75,7 @@ async def select_candidate_role(message: Message, state: FSMContext):
     if profile:
         await message.answer("Вы вошли как Кандидат.", reply_markup=candidate_menu())
     else:
-        await message.answer("Начнем заполнение анкеты кандидата!\nВведите ФИО:", reply_markup=None)
+        await message.answer("Начнем заполнение анкеты кандидата!\n1/10. Введите ФИО:", reply_markup=cancel_keyboard())
         await state.set_state(CandidateFSM.name)
 
 @dp.message(F.text == 'Работодатель')
@@ -87,70 +85,67 @@ async def select_employer_role(message: Message, state: FSMContext):
     if profile:
         await message.answer("Вы вошли как Работодатель.", reply_markup=employer_menu())
     else:
-        await message.answer("Начнем регистрацию компании!\nВведите название компании:", reply_markup=None)
+        await message.answer("Начнем регистрацию компании!\n1/5. Введите название компании:", reply_markup=cancel_keyboard())
         await state.set_state(EmployerFSM.company)
-
-
-# === ЭТАП 3: FSM КАНДИДАТА (10 ПОЛЕЙ) ===
 
 @dp.message(F.text == "Заполнить/Изменить профиль")
 async def start_candidate_fsm(message: Message, state: FSMContext):
-    await message.answer('1/10. Введите полное имя (ФИО):')
+    await message.answer('1/10. Введите полное имя (ФИО):', reply_markup=cancel_keyboard())
     await state.set_state(CandidateFSM.name)
 
 @dp.message(CandidateFSM.name)
 async def process_cand_name(message: Message, state: FSMContext):
     await state.update_data(name=message.text)
     await state.set_state(CandidateFSM.city)
-    await message.answer('2/10. Укажите ваш город:')
+    await message.answer('2/10. Укажите ваш город:', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.city)
 async def process_cand_city(message: Message, state: FSMContext):
     await state.update_data(city=message.text)
     await state.set_state(CandidateFSM.phone_number)
-    await message.answer('3/10. Введите номер телефона или контактные данные:')
+    await message.answer('3/10. Введите номер телефона или контактные данные:', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.phone_number)
 async def process_cand_phone(message: Message, state: FSMContext):
     await state.update_data(phone_number=message.text)
     await state.set_state(CandidateFSM.desired_position)
-    await message.answer('4/10. Укажите желаемую должность:')
+    await message.answer('4/10. Укажите желаемую должность:', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.desired_position)
 async def process_cand_position(message: Message, state: FSMContext):
     await state.update_data(desired_position=message.text)
     await state.set_state(CandidateFSM.experience_level)
-    await message.answer('5/10. Укажите ваш уровень опыта (Junior / Middle / Senior):')
+    await message.answer('5/10. Укажите ваш уровень опыта (Junior / Middle / Senior):', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.experience_level)
 async def process_cand_exp_level(message: Message, state: FSMContext):
     await state.update_data(experience_level=message.text)
     await state.set_state(CandidateFSM.skills)
-    await message.answer('6/10. Перечислите ваши ключевые навыки:')
+    await message.answer('6/10. Перечислите ваши ключевые навыки:', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.skills)
 async def process_cand_skills(message: Message, state: FSMContext):
     await state.update_data(skills=message.text)
     await state.set_state(CandidateFSM.desired_salary)
-    await message.answer('7/10. Укажите ожидаемую зарплату (цифрами):')
+    await message.answer('7/10. Укажите ожидаемую зарплату (цифрами):', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.desired_salary)
 async def process_cand_salary(message: Message, state: FSMContext):
     await state.update_data(desired_salary=message.text)
     await state.set_state(CandidateFSM.education)
-    await message.answer('8/10. Укажите ваше образование:')
+    await message.answer('8/10. Укажите ваше образование:', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.education)
 async def process_cand_education(message: Message, state: FSMContext):
     await state.update_data(education=message.text)
     await state.set_state(CandidateFSM.languages)
-    await message.answer('9/10. Укажите владение языками:')
+    await message.answer('9/10. Укажите владение языками:', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.languages)
 async def process_cand_languages(message: Message, state: FSMContext):
     await state.update_data(languages=message.text)
     await state.set_state(CandidateFSM.experience)
-    await message.answer('10/10. Опишите ваш подробный опыт работы:')
+    await message.answer('10/10. Опишите ваш подробный опыт работы:', reply_markup=cancel_keyboard())
 
 @dp.message(CandidateFSM.experience)
 async def process_cand_experience(message: Message, state: FSMContext):
@@ -202,37 +197,99 @@ async def show_candidate_profile(message: Message):
     )
     await message.answer(result, parse_mode="Markdown")
 
+@dp.message(F.text == "Поиск вакансий")
+async def search_vacancies_handler(message: Message):
+    vacancies = await get_all_active_vacancies()
+    if not vacancies:
+        await message.answer("На данный момент активных вакансий нет.", reply_markup=candidate_menu())
+        return
 
-# === ЭТАП 4: FSM РАБОТОДАТЕЛЯ (5 ПОЛЕЙ) ===
+    for vac in vacancies:
+        card = (
+            f"📌 *{vac['title']}*\n"
+            f"🏢 Компания: {vac['company_name']}\n"
+            f"📍 Город: {vac['city']}\n"
+            f"💼 Тип: {vac['job_type']} ({vac['experience_level']})\n"
+            f"💰 ЗП: {vac['salary_min']} - {vac['salary_max']}\n\n"
+            f"🛠 *Навыки:* {vac['required_skills']}\n"
+            f"📋 *Требования:* {vac['requirements']}"
+        )
+        await message.answer(
+            card,
+            parse_mode="Markdown",
+            reply_markup=vacancy_action_inline(vac['id'], is_closed=False)
+        )
+
+STATUS_TRANSLATIONS = {
+    "submitted": "⏳ Отправлен",
+    "reviewing": "👀 На рассмотрении",
+    "interview": "🤝 Собеседование",
+    "accepted": "✅ Принят",
+    "rejected": "❌ Отклонен"
+}
+
+@dp.callback_query(F.data.startswith("vac_apply_"))
+async def apply_to_vacancy(callback: CallbackQuery):
+    vacancy_id = int(callback.data.split("_")[2])
+    candidate_id = callback.from_user.id
+
+    if await is_already_applied(vacancy_id, candidate_id):
+        await callback.answer("⚠️ Вы уже откликались на эту вакансию!", show_alert=True)
+        return
+
+    success = await create_application(vacancy_id, candidate_id)
+    if success:
+        await callback.answer("✅ Отклик успешно отправлен!", show_alert=True)
+    else:
+        await callback.answer("❌ Ошибка при отправке отклика.", show_alert=True)
+
+@dp.message(F.text == "Мои отклики")
+async def show_candidate_applications(message: Message):
+    apps = await get_candidate_applications(message.from_user.id)
+    if not apps:
+        await message.answer("У вас пока нет активных откликов.", reply_markup=candidate_menu())
+        return
+
+    text = "📋 *Ваши отклики на вакансии:*\n\n"
+    for app in apps:
+        status_human = STATUS_TRANSLATIONS.get(app['status'], app['status'])
+        date_str = app['created_at'].strftime("%d.%m.%Y %H:%M")
+        text += (
+            f"🏢 *{app['company_name']}* — {app['vacancy_title']}\n"
+            f"📊 Статус: `{status_human}`\n"
+            f"📅 Дата: {date_str}\n"
+            f"-----------------------------------\n"
+        )
+    await message.answer(text, parse_mode="Markdown", reply_markup=candidate_menu())
 
 @dp.message(F.text == "Заполнить/Изменить компанию")
 async def start_employer_fsm(message: Message, state: FSMContext):
-    await message.answer('1/5. Название компании:')
+    await message.answer('1/5. Название компании:', reply_markup=cancel_keyboard())
     await state.set_state(EmployerFSM.company)
 
 @dp.message(EmployerFSM.company)
 async def process_emp_company(message: Message, state: FSMContext):
     await state.update_data(company=message.text)
     await state.set_state(EmployerFSM.industry)
-    await message.answer('2/5. Отрасль компании:')
+    await message.answer('2/5. Отрасль компании:', reply_markup=cancel_keyboard())
 
 @dp.message(EmployerFSM.industry)
 async def process_emp_industry(message: Message, state: FSMContext):
     await state.update_data(industry=message.text)
     await state.set_state(EmployerFSM.city)
-    await message.answer('3/5. Город:')
+    await message.answer('3/5. Город:', reply_markup=cancel_keyboard())
 
 @dp.message(EmployerFSM.city)
 async def process_emp_city(message: Message, state: FSMContext):
     await state.update_data(city=message.text)
     await state.set_state(EmployerFSM.description)
-    await message.answer('4/5. Описание компании:')
+    await message.answer('4/5. Описание компании:', reply_markup=cancel_keyboard())
 
 @dp.message(EmployerFSM.description)
 async def process_emp_desc(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
     await state.set_state(EmployerFSM.contact_information)
-    await message.answer('5/5. Контактная информация:')
+    await message.answer('5/5. Контактная информация:', reply_markup=cancel_keyboard())
 
 @dp.message(EmployerFSM.contact_information)
 async def process_emp_contact(message: Message, state: FSMContext):
@@ -257,185 +314,9 @@ async def confirm_employer_profile(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(" Профиль компании сохранен в БД!", reply_markup=employer_menu())
 
-@dp.message(F.text == "Профиль компании")
-async def show_employer_profile(message: Message):
-    profile = await get_employer_profile(message.from_user.id)
-    if not profile:
-        await message.answer("Профиль компании не найден. Пожалуйста, заполните его.")
-        return
-    
-    result = (
-        "*Профиль компании:*\n\n"
-        f"1. *Компания:* {profile['company_name']}\n"
-        f"2. *Отрасль:* {profile['industry']}\n"
-        f"3. *Город:* {profile['city']}\n"
-        f"4. *Описание:* {profile['description']}\n"
-        f"5. *Контакты:* {profile['contact_information']}"
-    )
-    await message.answer(result, parse_mode="Markdown")
-
-
-# === ЭТАП 5: FSM ВАКАНСИИ (11 ПОЛЕЙ) ===
-
-@dp.message(F.text == "Создать вакансию")
-async def start_vacancy_fsm(message: Message, state: FSMContext):
-    employer = await get_employer_profile(message.from_user.id)
-    if not employer:
-        await message.answer("Сначала заполните профиль компании!")
-        return
-
-    await message.answer("1/11. Введите название вакансии:")
-    await state.set_state(VacancyFSM.title)
-
-@dp.message(VacancyFSM.title)
-async def process_vac_title(message: Message, state: FSMContext):
-    await state.update_data(title=message.text)
-    await state.set_state(VacancyFSM.description)
-    await message.answer("2/11. Введите подробное описание вакансии:")
-
-@dp.message(VacancyFSM.description)
-async def process_vac_desc(message: Message, state: FSMContext):
-    await state.update_data(description=message.text)
-    await state.set_state(VacancyFSM.city)
-    await message.answer("3/11. Укажите город:")
-
-@dp.message(VacancyFSM.city)
-async def process_vac_city(message: Message, state: FSMContext):
-    await state.update_data(city=message.text)
-    await state.set_state(VacancyFSM.job_type)
-    await message.answer("4/11. Тип занятости (Полная, Частичная, Удаленка):")
-
-@dp.message(VacancyFSM.job_type)
-async def process_vac_job_type(message: Message, state: FSMContext):
-    await state.update_data(job_type=message.text)
-    await state.set_state(VacancyFSM.experience_level)
-    await message.answer("5/11. Требуемый уровень опыта (Junior / Middle / Senior):")
-
-@dp.message(VacancyFSM.experience_level)
-async def process_vac_exp(message: Message, state: FSMContext):
-    await state.update_data(experience_level=message.text)
-    await state.set_state(VacancyFSM.required_skills)
-    await message.answer("6/11. Требуемые навыки (через запятую):")
-
-@dp.message(VacancyFSM.required_skills)
-async def process_vac_skills(message: Message, state: FSMContext):
-    await state.update_data(required_skills=message.text)
-    await state.set_state(VacancyFSM.salary_min)
-    await message.answer("7/11. Минимальная зарплата (число):")
-
-@dp.message(VacancyFSM.salary_min)
-async def process_vac_sal_min(message: Message, state: FSMContext):
-    await state.update_data(salary_min=message.text)
-    await state.set_state(VacancyFSM.salary_max)
-    await message.answer("8/11. Максимальная зарплата (число):")
-
-@dp.message(VacancyFSM.salary_max)
-async def process_vac_sal_max(message: Message, state: FSMContext):
-    await state.update_data(salary_max=message.text)
-    await state.set_state(VacancyFSM.requirements)
-    await message.answer("9/11. Требования к кандидату:")
-
-@dp.message(VacancyFSM.requirements)
-async def process_vac_reqs(message: Message, state: FSMContext):
-    await state.update_data(requirements=message.text)
-    await state.set_state(VacancyFSM.responsibilities)
-    await message.answer("10/11. Обязанности кандидата:")
-
-@dp.message(VacancyFSM.responsibilities)
-async def process_vac_resp(message: Message, state: FSMContext):
-    await state.update_data(responsibilities=message.text)
-    await state.set_state(VacancyFSM.status)
-    await message.answer("11/11. Выберите статус для вакансии:", reply_markup=vacancy_status_keyboard())
-
-@dp.message(VacancyFSM.status)
-async def process_vac_status(message: Message, state: FSMContext):
-    status_text = message.text
-    status = 'draft' if 'draft' in status_text.lower() else 'active'
-    await state.update_data(status=status)
-    
-    data = await state.get_data()
-    result = (
-        "*Подтверждение создания вакансии:*\n\n"
-        f"1. *Название:* {data.get('title')}\n"
-        f"2. *Описание:* {data.get('description')}\n"
-        f"3. *Город:* {data.get('city')}\n"
-        f"4. *Тип занятости:* {data.get('job_type')}\n"
-        f"5. *Уровень:* {data.get('experience_level')}\n"
-        f"6. *Навыки:* {data.get('required_skills')}\n"
-        f"7. *Мин. ЗП:* {data.get('salary_min')}\n"
-        f"8. *Макс. ЗП:* {data.get('salary_max')}\n"
-        f"9. *Требования:* {data.get('requirements')}\n"
-        f"10. *Обязанности:* {data.get('responsibilities')}\n"
-        f"11. *Статус:* {data.get('status')}"
-    )
-    await state.set_state(VacancyFSM.confirm)
-    await message.answer(result, parse_mode="Markdown", reply_markup=confirm_keyboard())
-
-@dp.message(VacancyFSM.confirm, F.text == "Подтвердить")
-async def confirm_vacancy(message: Message, state: FSMContext):
-    data = await state.get_data()
-    employer = await get_employer_profile(message.from_user.id)
-    
-    await save_vacancy(
-        employer_id=message.from_user.id,
-        company_name=employer['company_name'],
-        data=data,
-        status=data['status']
-    )
-    await state.clear()
-    await message.answer(" Вакансия успешно сохранена!", reply_markup=employer_menu())
-
-
-# === ПРОСМОТР И УПРАВЛЕНИЕ ВАКАНСИЯМИ ===
-
-@dp.message(F.text == "Мои вакансии")
-async def list_employer_vacancies(message: Message):
-    vacancies = await get_employer_vacancies(message.from_user.id)
-    if not vacancies:
-        await message.answer("У вас пока нет созданных вакансий.")
-        return
-
-    for vac in vacancies:
-        is_closed = vac['status'] == 'closed'
-        text = (
-            f"📌 *{vac['title']}* ({vac['status'].upper()})\n"
-            f"🏢 Компания: {vac['company_name']}\n"
-            f"📍 Город: {vac['city']}\n"
-            f"💼 Тип: {vac['job_type']} ({vac['experience_level']})\n"
-            f"💰 ЗП: {vac['salary_min']} - {vac['salary_max']}\n\n"
-            f"📄 *Описание:* {vac['description']}\n"
-            f"🛠 *Навыки:* {vac['required_skills']}\n"
-            f"📋 *Требования:* {vac['requirements']}\n"
-            f"📝 *Обязанности:* {vac['responsibilities']}"
-        )
-        await message.answer(
-            text, 
-            parse_mode="Markdown", 
-            reply_markup=vacancy_action_inline(vac['id'], is_closed=is_closed)
-        )
-
-@dp.callback_query(F.data.startswith("close_vac_"))
-async def process_close_vacancy(callback: CallbackQuery):
-    vac_id = int(callback.data.split("_")[2])
-    await close_vacancy(vac_id, callback.from_user.id)
-    await callback.answer("Вакансия закрыта!")
-    await callback.message.edit_text(callback.message.text + "\n\n❌ *ВAКАНСИЯ ЗАКРЫТА*", parse_mode="Markdown")
-
-
-# === СБРОС И НЕПРЕДВИДЕННЫЕ ВВОДЫ ===
-
-@dp.message(F.text == "Заполнить заново")
-async def reset_fsm(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Заполнение отменено. Выберите нужный пункт меню.", reply_markup=start_buttons())
-
-
-# === MAIN ===
-
 async def main():
     await create_tables()
-    logging.basicConfig(level=logging.INFO)
-    logging.info("Бот запускается...")
+    print("Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
