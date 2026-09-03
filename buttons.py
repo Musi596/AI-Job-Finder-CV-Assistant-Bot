@@ -36,3 +36,23 @@ def vacancy_action_inline(vacancy_id: int, is_closed: bool = False):
     if not is_closed:
         buttons.append([InlineKeyboardButton(text="📩 Откликнуться", callback_data=f"vac_apply_{vacancy_id}")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def employer_vacancies_inline(vacancies):
+    keyboard = []
+    for vac in vacancies:
+        btn_text = f"📌 {vac['title']} (Откликов: {vac['applications_count']})"
+        keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"emp_vac_apps_{vac['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def candidate_action_inline(app_id: int, current_status: str):
+    keyboard = [
+        [
+            InlineKeyboardButton(text="👤 Посмотреть профиль", callback_data=f"app_profile_{app_id}"),
+            InlineKeyboardButton(text="📄 Посмотреть резюме", callback_data=f"app_resume_{app_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🤝 Пригласить", callback_data=f"app_status_interview_{app_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"app_status_rejected_{app_id}")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)

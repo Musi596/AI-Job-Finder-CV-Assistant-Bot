@@ -10,9 +10,11 @@ from dotenv import load_dotenv
 
 from buttons import (
     cancel_keyboard,
+    candidate_action_inline,
     candidate_menu,
     confirm_keyboard,
     employer_menu,
+    employer_vacancies_inline,
     start_buttons,
     vacancy_action_inline,
 )
@@ -20,13 +22,17 @@ from sql import (
     create_application,
     create_tables,
     get_all_active_vacancies,
+    get_application_by_id,
+    get_applications_for_vacancy,
     get_candidate_applications,
     get_candidate_profile,
     get_employer_profile,
+    get_employer_vacancies_with_app_count,
     is_already_applied,
     register_user,
     save_candidate_profile,
     save_employer_profile,
+    update_application_status,
 )
 
 load_dotenv()
@@ -53,6 +59,14 @@ class EmployerFSM(StatesGroup):
     description = State()
     contact_information = State()
     confirm = State()
+
+STATUS_TRANSLATIONS = {
+    "submitted": "⏳ Отправлен",
+    "reviewing": "👀 На рассмотрении",
+    "interview": "🤝 Собеседование",
+    "accepted": "✅ Принят",
+    "rejected": "❌ Отклонен"
+}
 
 @dp.message(F.text == "❌ Отмена")
 async def cancel_handler(message: Message, state: FSMContext):
@@ -173,7 +187,7 @@ async def confirm_candidate_profile(message: Message, state: FSMContext):
     data = await state.get_data()
     await save_candidate_profile(message.from_user.id, data)
     await state.clear()
-    await message.answer(" Профиль кандидата успешно сохранен в БД!", reply_markup=candidate_menu())
+    await message.answer("Профиль кандидата успешно сохранен в БД!", reply_markup=candidate_menu())
 
 @dp.message(F.text == "Мой профиль")
 async def show_candidate_profile(message: Message):
@@ -219,14 +233,6 @@ async def search_vacancies_handler(message: Message):
             parse_mode="Markdown",
             reply_markup=vacancy_action_inline(vac['id'], is_closed=False)
         )
-
-STATUS_TRANSLATIONS = {
-    "submitted": "⏳ Отправлен",
-    "reviewing": "👀 На рассмотрении",
-    "interview": "🤝 Собеседование",
-    "accepted": "✅ Принят",
-    "rejected": "❌ Отклонен"
-}
 
 @dp.callback_query(F.data.startswith("vac_apply_"))
 async def apply_to_vacancy(callback: CallbackQuery):
@@ -312,7 +318,137 @@ async def confirm_employer_profile(message: Message, state: FSMContext):
     data = await state.get_data()
     await save_employer_profile(message.from_user.id, data)
     await state.clear()
-    await message.answer(" Профиль компании сохранен в БД!", reply_markup=employer_menu())
+    await message.answer("Профиль компании сохранен в БД!", reply_markup=employer_menu())
+
+@dp.message(F.text == "Мои вакансии")
+async def show_employer_vacancies_apps(message: Message):
+    vacancies = await get_employer_vacancies_with_app_count(message.from_user.id)
+    if not vacancies:
+        await message.answer("У вас пока нет созданных вакансий.", reply_markup=employer_menu())
+        return
+
+    await message.answer(
+        "📋 *Ваши вакансии:* Нажмите на вакансию, чтобы просмотреть отклики.",
+        parse_mode="Markdown",
+        reply_markup=employer_vacancies_inline(vacancies)
+    )
+
+@dp.callback_query(F.data.startswith("emp_vac_apps_"))
+async def list_vacancy_applications(callback: CallbackQuery):
+    vacancy_id = int(callback.data.split("_")[3])
+    apps = await get_applications_for_vacancy(vacancy_id)
+
+    if not apps:
+        await callback.answer("На эту вакансию пока нет откликов.", show_alert=True)
+        return
+
+    await callback.answer()
+    await callback.message.answer(f"📥 *Откликов на вакансию: {len(apps)}*")
+
+    for app in apps:
+        matching_percent = "85%"
+        status_human = STATUS_TRANSLATIONS.get(app['app_status'], app['app_status'])
+
+        card = (
+            f"👤 *Имя:* {app['name']}\n"
+            f"🎯 *Процент соответствия:* `{matching_percent}`\n"
+            f"💼 *Уровень опыта:* {app['experience_level']}\n"
+            f"📊 *Статус:* {status_human}"
+        )
+
+        await callback.message.answer(
+            card,
+            parse_mode="Markdown",
+            reply_markup=candidate_action_inline(app['app_id'], app['app_status'])
+        )
+
+@dp.callback_query(F.data.startswith("app_profile_"))
+async def view_candidate_profile(callback: CallbackQuery):
+    app_id = int(callback.data.split("_")[2])
+    app = await get_application_by_id(app_id)
+
+    if not app:
+        await callback.answer("Отклик не найден.", show_alert=True)
+        return
+
+    if app['app_status'] in ['interview', 'accepted']:
+        contact_info = app['phone_number']
+    else:
+        contact_info = "🔒 *Скрыто до приглашения на собеседование*"
+
+    profile_text = (
+        f"👤 *Профиль кандидата: {app['name']}*\n\n"
+        f"📍 *Город:* {app['city']}\n"
+        f"💼 *Уровень:* {app['experience_level']}\n"
+        f"🎯 *Желаемая должность:* {app['desired_position']}\n"
+        f"💰 *Ожидаемая ЗП:* {app['desired_salary']}\n"
+        f"🎓 *Образование:* {app['education']}\n"
+        f"🌐 *Языки:* {app['languages']}\n"
+        f"📞 *Контакты:* {contact_info}"
+    )
+
+    await callback.answer()
+    await callback.message.answer(profile_text, parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("app_resume_"))
+async def view_candidate_resume(callback: CallbackQuery):
+    app_id = int(callback.data.split("_")[2])
+    app = await get_application_by_id(app_id)
+
+    if not app:
+        await callback.answer("Отклик не найден.", show_alert=True)
+        return
+
+    resume_text = (
+        f"📄 *Резюме и Опыт работы ({app['name']}):*\n\n"
+        f"🛠 *Ключевые навыки:* {app['skills']}\n\n"
+        f"📋 *Подробный опыт:* {app['experience']}"
+    )
+
+    await callback.answer()
+    await callback.message.answer(resume_text, parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("app_status_"))
+async def change_application_status(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    new_status = parts[2]
+    app_id = int(parts[3])
+
+    app = await get_application_by_id(app_id)
+    if not app:
+        await callback.answer("Отклик не найден.", show_alert=True)
+        return
+
+    success = await update_application_status(app_id, new_status)
+    if success:
+        if new_status == 'interview':
+            await callback.answer("✅ Кандидат приглашен! Контакты открыты.", show_alert=True)
+            try:
+                await bot.send_message(
+                    chat_id=app['candidate_id'],
+                    text="🎉 Вас пригласили на собеседование!"
+                )
+            except Exception:
+                pass
+        elif new_status == 'rejected':
+            await callback.answer("❌ Отклик отклонен.", show_alert=True)
+            try:
+                await bot.send_message(
+                    chat_id=app['candidate_id'],
+                    text="К сожалению, ваш отклик был отклонен."
+                )
+            except Exception:
+                pass
+
+        status_human = STATUS_TRANSLATIONS.get(new_status, new_status)
+        await callback.message.edit_text(
+            f"👤 *Имя:* {app['name']}\n"
+            f"🎯 *Процент соответствия:* `85%`\n"
+            f"💼 *Уровень опыта:* {app['experience_level']}\n"
+            f"📊 *Статус:* {status_human}",
+            parse_mode="Markdown",
+            reply_markup=candidate_action_inline(app_id, new_status)
+        )
 
 async def main():
     await create_tables()

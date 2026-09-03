@@ -194,3 +194,83 @@ async def get_candidate_applications(candidate_id: int):
         """, candidate_id)
     finally:
         await db.close()
+
+async def get_employer_vacancies_with_app_count(employer_id: int):
+    db = await connection()
+    try:
+        return await db.fetch("""
+            SELECT v.*, COUNT(a.id) AS applications_count
+            FROM vacancies v
+            LEFT JOIN applications a ON v.id = a.vacancy_id
+            WHERE v.employer_id = $1
+            GROUP BY v.id
+            ORDER BY v.created_at DESC;
+        """, employer_id)
+    finally:
+        await db.close()
+
+async def get_applications_for_vacancy(vacancy_id: int):
+    db = await connection()
+    try:
+        return await db.fetch("""
+            SELECT 
+                a.id AS app_id,
+                a.status AS app_status,
+                a.candidate_id,
+                cp.name,
+                cp.experience_level,
+                cp.skills,
+                cp.desired_position,
+                cp.city,
+                cp.desired_salary,
+                cp.education,
+                cp.languages,
+                cp.experience,
+                cp.phone_number
+            FROM applications a
+            JOIN candidate_profiles cp ON a.candidate_id = cp.user_id
+            WHERE a.vacancy_id = $1
+            ORDER BY a.created_at DESC;
+        """, vacancy_id)
+    finally:
+        await db.close()
+
+async def get_application_by_id(app_id: int):
+    db = await connection()
+    try:
+        return await db.fetchrow("""
+            SELECT 
+                a.id AS app_id,
+                a.status AS app_status,
+                a.candidate_id,
+                a.vacancy_id,
+                cp.name,
+                cp.experience_level,
+                cp.skills,
+                cp.desired_position,
+                cp.city,
+                cp.desired_salary,
+                cp.education,
+                cp.languages,
+                cp.experience,
+                cp.phone_number
+            FROM applications a
+            JOIN candidate_profiles cp ON a.candidate_id = cp.user_id
+            WHERE a.id = $1;
+        """, app_id)
+    finally:
+        await db.close()
+
+async def update_application_status(app_id: int, new_status: str):
+    db = await connection()
+    try:
+        await db.execute("""
+            UPDATE applications
+            SET status = $1
+            WHERE id = $2;
+        """, new_status, app_id)
+        return True
+    except Exception:
+        return False
+    finally:
+        await db.close()
