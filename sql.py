@@ -76,6 +76,14 @@ async def create_tables():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(vacancy_id, candidate_id)
         );
+
+        CREATE TABLE IF NOT EXISTS saved_vacancies (
+            id SERIAL PRIMARY KEY,
+            candidate_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+            vacancy_id INT NOT NULL REFERENCES vacancies(id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(candidate_id, vacancy_id)
+        );
         """)
         print('Таблицы успешно созданы')
     except Exception as er:
@@ -272,5 +280,58 @@ async def update_application_status(app_id: int, new_status: str):
         return True
     except Exception:
         return False
+    finally:
+        await db.close()
+
+# --- Методы для работы с сохранёнными вакансиями (Этап 9) ---
+
+async def save_vacancy(candidate_id: int, vacancy_id: int) -> bool:
+    db = await connection()
+    try:
+        await db.execute("""
+            INSERT INTO saved_vacancies (candidate_id, vacancy_id)
+            VALUES ($1, $2)
+            ON CONFLICT (candidate_id, vacancy_id) DO NOTHING;
+        """, candidate_id, vacancy_id)
+        return True
+    except Exception:
+        return False
+    finally:
+        await db.close()
+
+async def unsave_vacancy(candidate_id: int, vacancy_id: int) -> bool:
+    db = await connection()
+    try:
+        await db.execute("""
+            DELETE FROM saved_vacancies
+            WHERE candidate_id = $1 AND vacancy_id = $2;
+        """, candidate_id, vacancy_id)
+        return True
+    except Exception:
+        return False
+    finally:
+        await db.close()
+
+async def is_vacancy_saved(candidate_id: int, vacancy_id: int) -> bool:
+    db = await connection()
+    try:
+        row = await db.fetchrow(
+            "SELECT 1 FROM saved_vacancies WHERE candidate_id = $1 AND vacancy_id = $2;",
+            candidate_id, vacancy_id
+        )
+        return row is not None
+    finally:
+        await db.close()
+
+async def get_saved_vacancies(candidate_id: int):
+    db = await connection()
+    try:
+        return await db.fetch("""
+            SELECT v.*
+            FROM saved_vacancies sv
+            JOIN vacancies v ON sv.vacancy_id = v.id
+            WHERE sv.candidate_id = $1
+            ORDER BY sv.created_at DESC;
+        """, candidate_id)
     finally:
         await db.close()

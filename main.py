@@ -28,10 +28,14 @@ from sql import (
     get_candidate_profile,
     get_employer_profile,
     get_employer_vacancies_with_app_count,
+    get_saved_vacancies,
     is_already_applied,
+    is_vacancy_saved,
     register_user,
     save_candidate_profile,
     save_employer_profile,
+    save_vacancy,
+    unsave_vacancy,
     update_application_status,
 )
 
@@ -219,6 +223,7 @@ async def search_vacancies_handler(message: Message):
         return
 
     for vac in vacancies:
+        is_saved = await is_vacancy_saved(message.from_user.id, vac['id'])
         card = (
             f"📌 *{vac['title']}*\n"
             f"🏢 Компания: {vac['company_name']}\n"
@@ -231,7 +236,53 @@ async def search_vacancies_handler(message: Message):
         await message.answer(
             card,
             parse_mode="Markdown",
-            reply_markup=vacancy_action_inline(vac['id'], is_closed=False)
+            reply_markup=vacancy_action_inline(vac['id'], is_saved=is_saved, is_closed=False)
+        )
+
+@dp.callback_query(F.data.startswith("vac_save_"))
+async def handle_save_vacancy(callback: CallbackQuery):
+    vacancy_id = int(callback.data.split("_")[2])
+    candidate_id = callback.from_user.id
+
+    await save_vacancy(candidate_id, vacancy_id)
+    await callback.answer("⭐️ Вакансия сохранена!", show_alert=True)
+    await callback.message.edit_reply_markup(
+        reply_markup=vacancy_action_inline(vacancy_id, is_saved=True, is_closed=False)
+    )
+
+@dp.callback_query(F.data.startswith("vac_unsave_"))
+async def handle_unsave_vacancy(callback: CallbackQuery):
+    vacancy_id = int(callback.data.split("_")[2])
+    candidate_id = callback.from_user.id
+
+    await unsave_vacancy(candidate_id, vacancy_id)
+    await callback.answer("❌ Вакансия удалена из сохранённых.", show_alert=True)
+    await callback.message.edit_reply_markup(
+        reply_markup=vacancy_action_inline(vacancy_id, is_saved=False, is_closed=False)
+    )
+
+@dp.message(F.text == "Сохранённые вакансии")
+async def show_saved_vacancies_handler(message: Message):
+    saved_vacs = await get_saved_vacancies(message.from_user.id)
+    if not saved_vacs:
+        await message.answer("У вас нет сохранённых вакансий.", reply_markup=candidate_menu())
+        return
+
+    await message.answer("⭐️ *Ваши сохранённые вакансии:*", parse_mode="Markdown")
+    for vac in saved_vacs:
+        card = (
+            f"📌 *{vac['title']}*\n"
+            f"🏢 Компания: {vac['company_name']}\n"
+            f"📍 Город: {vac['city']}\n"
+            f"💼 Тип: {vac['job_type']} ({vac['experience_level']})\n"
+            f"💰 ЗП: {vac['salary_min']} - {vac['salary_max']}\n\n"
+            f"🛠 *Навыки:* {vac['required_skills']}\n"
+            f"📋 *Требования:* {vac['requirements']}"
+        )
+        await message.answer(
+            card,
+            parse_mode="Markdown",
+            reply_markup=vacancy_action_inline(vac['id'], is_saved=True, is_closed=(vac['status'] == 'closed'))
         )
 
 @dp.callback_query(F.data.startswith("vac_apply_"))
