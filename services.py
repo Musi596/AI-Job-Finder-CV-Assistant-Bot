@@ -4,11 +4,13 @@ from sql import (
     get_candidate_applications,
     get_candidate_profile,
     get_employer_profile,
+    get_latest_cv_file,
     get_saved_vacancies,
     is_already_applied,
     is_vacancy_saved,
     register_user,
     save_candidate_profile,
+    save_cv_file,
     save_employer_profile,
     save_vacancy,
     unsave_vacancy,
@@ -67,3 +69,11 @@ async def fetch_saved_vacancies(candidate_id: int):
 
 async def check_is_saved(candidate_id: int, vacancy_id: int) -> bool:
     return await is_vacancy_saved(candidate_id, vacancy_id)
+
+
+async def store_cv_file(candidate_id: int, file_path: str, original_file_name: str, extracted_text: str):
+    return await save_cv_file(candidate_id, file_path, original_file_name, extracted_text)
+
+
+async def fetch_latest_cv(candidate_id: int):
+    return await get_latest_cv_file(candidate_id)

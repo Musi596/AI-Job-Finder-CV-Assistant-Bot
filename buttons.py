@@ -9,8 +9,8 @@ def start_buttons():
 def candidate_menu():
     kb = [
         [KeyboardButton(text="Поиск вакансий"), KeyboardButton(text="Мои отклики")],
-        [KeyboardButton(text="Сохранённые вакансии"), KeyboardButton(text="Мой профиль")],
-        [KeyboardButton(text="Заполнить/Изменить профиль")]
+        [KeyboardButton(text="Сохранённые вакансии"), KeyboardButton(text="📄 Загрузить резюме (TXT)")],
+        [KeyboardButton(text="Заполнить/Изменить профиль"), KeyboardButton(text="Мой профиль")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -67,4 +67,4 @@ def candidate_action_inline(app_id: int, current_status: str):
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"app_status_rejected_{app_id}")
         ]
     ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)   
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)

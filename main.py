@@ -1,5 +1,6 @@
 import asyncio
 import os
+import uuid
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
@@ -33,6 +34,7 @@ from sql import (
     is_vacancy_saved,
     register_user,
     save_candidate_profile,
+    save_cv_file,
     save_employer_profile,
     save_vacancy,
     unsave_vacancy,
@@ -42,6 +44,9 @@ from sql import (
 load_dotenv()
 dp = Dispatcher()
 bot = Bot(token=os.getenv("BOT_TOKEN"))
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 class CandidateFSM(StatesGroup):
     name = State()
@@ -55,6 +60,9 @@ class CandidateFSM(StatesGroup):
     languages = State()
     experience = State()
     confirm = State()
+
+class CVUploadFSM(StatesGroup):
+    waiting_for_file = State()
 
 class EmployerFSM(StatesGroup):
     company = State()
@@ -72,6 +80,10 @@ STATUS_TRANSLATIONS = {
     "rejected": "❌ Отклонен"
 }
 
+def extract_text_from_txt(file_path: str) -> str:
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read().strip()
+
 @dp.message(F.text == "❌ Отмена")
 async def cancel_handler(message: Message, state: FSMContext):
     current_state = await state.get_state()
@@ -79,7 +91,7 @@ async def cancel_handler(message: Message, state: FSMContext):
         await message.answer("Нечего отменять.", reply_markup=candidate_menu())
         return
     await state.clear()
-    await message.answer("❌ Заполнение прервано. Возврат в главное меню.", reply_markup=candidate_menu())
+    await message.answer("❌ Заполнение/загрузка прервана. Возврат в главное меню.", reply_markup=candidate_menu())
 
 @dp.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
@@ -105,6 +117,60 @@ async def select_employer_role(message: Message, state: FSMContext):
     else:
         await message.answer("Начнем регистрацию компании!\n1/5. Введите название компании:", reply_markup=cancel_keyboard())
         await state.set_state(EmployerFSM.company)
+
+@dp.message(F.text == "📄 Загрузить резюме (TXT)")
+async def start_cv_upload(message: Message, state: FSMContext):
+    await message.answer(
+        "📎 Пожалуйста, отправьте ваш CV файл в формате **TXT**:",
+        parse_mode="Markdown",
+        reply_markup=cancel_keyboard()
+    )
+    await state.set_state(CVUploadFSM.waiting_for_file)
+
+@dp.message(CVUploadFSM.waiting_for_file, F.document)
+async def process_cv_file(message: Message, state: FSMContext):
+    doc = message.document
+    if not doc.file_name.lower().endswith(".txt"):
+        await message.answer("⚠️ Пожалуйста, загрузите документ в формате TXT.")
+        return
+
+    unique_filename = f"{uuid.uuid4().hex}_{doc.file_name}"
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+
+    file_info = await bot.get_file(doc.file_id)
+    await bot.download_file(file_info.file_path, file_path)
+
+    try:
+        extracted_text = extract_text_from_txt(file_path)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при чтении TXT-файла: {e}", reply_markup=candidate_menu())
+        await state.clear()
+        return
+
+    if not extracted_text:
+        extracted_text = "Файл оказался пустым."
+
+    await save_cv_file(
+        candidate_id=message.from_user.id,
+        file_path=file_path,
+        original_file_name=doc.file_name,
+        extracted_text=extracted_text
+    )
+
+    await state.clear()
+    preview = extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else "")
+
+    await message.answer(
+        f"✅ **Файл успешно загружен и обработан!**\n\n"
+        f"📄 **Оригинальное имя:** `{doc.file_name}`\n\n"
+        f"🔍 **Извлечённый текст (предпросмотр):**\n\n```{preview}```",
+        parse_mode="Markdown",
+        reply_markup=candidate_menu()
+    )
+
+@dp.message(CVUploadFSM.waiting_for_file)
+async def invalid_cv_upload(message: Message):
+    await message.answer("⚠️ Пожалуйста, отправьте файл резюме (TXT) как документ.")
 
 @dp.message(F.text == "Заполнить/Изменить профиль")
 async def start_candidate_fsm(message: Message, state: FSMContext):

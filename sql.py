@@ -84,6 +84,15 @@ async def create_tables():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(candidate_id, vacancy_id)
         );
+
+        CREATE TABLE IF NOT EXISTS cv_files (
+            id SERIAL PRIMARY KEY,
+            candidate_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+            file_path VARCHAR(255) NOT NULL,
+            original_file_name VARCHAR(255) NOT NULL,
+            extracted_text TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         print('Таблицы успешно созданы')
     except Exception as er:
@@ -283,7 +292,7 @@ async def update_application_status(app_id: int, new_status: str):
     finally:
         await db.close()
 
-# --- Методы для работы с сохранёнными вакансиями (Этап 9) ---
+# --- Сохранённые вакансии (Этап 9) ---
 
 async def save_vacancy(candidate_id: int, vacancy_id: int) -> bool:
     db = await connection()
@@ -332,6 +341,30 @@ async def get_saved_vacancies(candidate_id: int):
             JOIN vacancies v ON sv.vacancy_id = v.id
             WHERE sv.candidate_id = $1
             ORDER BY sv.created_at DESC;
+        """, candidate_id)
+    finally:
+        await db.close()
+
+# --- Загрузка и сохраненный текст CV (Этап 10) ---
+
+async def save_cv_file(candidate_id: int, file_path: str, original_file_name: str, extracted_text: str):
+    db = await connection()
+    try:
+        return await db.fetchval("""
+            INSERT INTO cv_files (candidate_id, file_path, original_file_name, extracted_text)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id;
+        """, candidate_id, file_path, original_file_name, extracted_text)
+    finally:
+        await db.close()
+
+async def get_latest_cv_file(candidate_id: int):
+    db = await connection()
+    try:
+        return await db.fetchrow("""
+            SELECT * FROM cv_files
+            WHERE candidate_id = $1
+            ORDER BY created_at DESC LIMIT 1;
         """, candidate_id)
     finally:
         await db.close()
