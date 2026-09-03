@@ -1,5 +1,6 @@
 import asyncio
 import logging
+logging.basicConfig(level=logging.INFO)
 import os
 
 from aiogram import Bot, Dispatcher, F
@@ -22,6 +23,7 @@ from buttons import (
 
 load_dotenv()
 dp = Dispatcher()
+bot = Bot(os.getenv("BOT_TOKEN"))
 
 class CandidateFSM(StatesGroup):
     name = State()
@@ -36,6 +38,7 @@ class CandidateFSM(StatesGroup):
     experience = State()
     confirm = State()
 
+# 2. Работодатель (5 шагов)
 class EmployerFSM(StatesGroup):
     company = State()
     industry = State()
@@ -44,6 +47,7 @@ class EmployerFSM(StatesGroup):
     contact_information = State()
     confirm = State()
 
+# 3. Вакансия (11 полей)
 class VacancyFSM(StatesGroup):
     title = State()
     description = State()
@@ -57,6 +61,9 @@ class VacancyFSM(StatesGroup):
     responsibilities = State()
     status = State()
     confirm = State()
+
+
+# === СТАРТ И ВЫБОР РОЛИ ===
 
 @dp.message(CommandStart())
 async def start_handler(message: Message, state: FSMContext):
@@ -82,6 +89,9 @@ async def select_employer_role(message: Message, state: FSMContext):
     else:
         await message.answer("Начнем регистрацию компании!\nВведите название компании:", reply_markup=None)
         await state.set_state(EmployerFSM.company)
+
+
+# === ЭТАП 3: FSM КАНДИДАТА (10 ПОЛЕЙ) ===
 
 @dp.message(F.text == "Заполнить/Изменить профиль")
 async def start_candidate_fsm(message: Message, state: FSMContext):
@@ -192,6 +202,9 @@ async def show_candidate_profile(message: Message):
     )
     await message.answer(result, parse_mode="Markdown")
 
+
+# === ЭТАП 4: FSM РАБОТОДАТЕЛЯ (5 ПОЛЕЙ) ===
+
 @dp.message(F.text == "Заполнить/Изменить компанию")
 async def start_employer_fsm(message: Message, state: FSMContext):
     await message.answer('1/5. Название компании:')
@@ -260,6 +273,9 @@ async def show_employer_profile(message: Message):
         f"5. *Контакты:* {profile['contact_information']}"
     )
     await message.answer(result, parse_mode="Markdown")
+
+
+# === ЭТАП 5: FSM ВАКАНСИИ (11 ПОЛЕЙ) ===
 
 @dp.message(F.text == "Создать вакансию")
 async def start_vacancy_fsm(message: Message, state: FSMContext):
@@ -369,6 +385,9 @@ async def confirm_vacancy(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(" Вакансия успешно сохранена!", reply_markup=employer_menu())
 
+
+# === ПРОСМОТР И УПРАВЛЕНИЕ ВАКАНСИЯМИ ===
+
 @dp.message(F.text == "Мои вакансии")
 async def list_employer_vacancies(message: Message):
     vacancies = await get_employer_vacancies(message.from_user.id)
@@ -402,10 +421,16 @@ async def process_close_vacancy(callback: CallbackQuery):
     await callback.answer("Вакансия закрыта!")
     await callback.message.edit_text(callback.message.text + "\n\n❌ *ВAКАНСИЯ ЗАКРЫТА*", parse_mode="Markdown")
 
+
+# === СБРОС И НЕПРЕДВИДЕННЫЕ ВВОДЫ ===
+
 @dp.message(F.text == "Заполнить заново")
 async def reset_fsm(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Заполнение отменено. Выберите нужный пункт меню.", reply_markup=start_buttons())
+
+
+# === MAIN ===
 
 async def main():
     await create_tables()

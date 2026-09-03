@@ -6,11 +6,11 @@ load_dotenv()
 
 async def connection():
     return await asyncpg.connect(
-        host='localhost',
-        user='postgres',
-        database='job_fainder_db',
+        host=os.getenv('DB_HOST', 'localhost'),
+        user=os.getenv('DB_USER', 'postgres'),
+        database=os.getenv('DB_NAME', 'job_fainder_db'),
         password=os.getenv('DB_PASSWORD'),
-        port=5432
+        port=int(os.getenv('DB_PORT', 5432))
     )
 
 async def create_tables():
@@ -66,6 +66,15 @@ async def create_tables():
             responsibilities TEXT NOT NULL,
             status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('draft', 'active', 'closed')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS applications (
+            id SERIAL PRIMARY KEY,
+            vacancy_id INT NOT NULL REFERENCES vacancies(id) ON DELETE CASCADE,
+            candidate_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+            cover_letter TEXT,
+            status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(vacancy_id, candidate_id) -- Защита от повторных откликов на одну и ту же вакансию
         );
         """)
         print('Таблицы успешно созданы')

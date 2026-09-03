@@ -1,4 +1,6 @@
 from sql import connection
+
+# Регистрация / получение пользователя
 async def register_user(telegram_id: int, role: str):
     db = await connection()
     try:
@@ -16,6 +18,7 @@ async def get_user(telegram_id: int):
     finally:
         await db.close()
 
+# Профиль кандидата
 async def save_candidate_profile(telegram_id: int, data: dict):
     db = await connection()
     try:
@@ -48,6 +51,7 @@ async def get_candidate_profile(telegram_id: int):
     finally:
         await db.close()
 
+# Профиль работодателя
 async def save_employer_profile(telegram_id: int, data: dict):
     db = await connection()
     try:
@@ -89,10 +93,35 @@ async def save_vacancy(employer_id: int, company_name: str, data: dict, status: 
     finally:
         await db.close()
 
+async def update_vacancy(vacancy_id: int, employer_id: int, data: dict, status: str = 'active'):
+    db = await connection()
+    try:
+        s_min = int(data['salary_min']) if str(data['salary_min']).isdigit() else 0
+        s_max = int(data['salary_max']) if str(data['salary_max']).isdigit() else 0
+        
+        await db.execute("""
+            UPDATE vacancies 
+            SET title = $1, description = $2, city = $3, job_type = $4, experience_level = $5,
+                required_skills = $6, salary_min = $7, salary_max = $8, requirements = $9, 
+                responsibilities = $10, status = $11
+            WHERE id = $12 AND employer_id = $13
+        """, data['title'], data['description'], data['city'], data['job_type'],
+           data['experience_level'], data['required_skills'], s_min, s_max,
+           data['requirements'], data['responsibilities'], status, vacancy_id, employer_id)
+    finally:
+        await db.close()
+
 async def get_employer_vacancies(employer_id: int):
     db = await connection()
     try:
         return await db.fetch('SELECT * FROM vacancies WHERE employer_id = $1 ORDER BY id DESC', employer_id)
+    finally:
+        await db.close()
+
+async def get_vacancy_by_id(vacancy_id: int, employer_id: int):
+    db = await connection()
+    try:
+        return await db.fetchrow('SELECT * FROM vacancies WHERE id = $1 AND employer_id = $2', vacancy_id, employer_id)
     finally:
         await db.close()
 
