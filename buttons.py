@@ -8,9 +8,9 @@ def start_buttons():
 
 def candidate_menu():
     kb = [
-        [KeyboardButton(text="Поиск вакансий"), KeyboardButton(text="Мои отклики")],
-        [KeyboardButton(text="Сохранённые вакансии"), KeyboardButton(text="📄 Загрузить резюме (TXT)")],
-        [KeyboardButton(text="Заполнить/Изменить профиль"), KeyboardButton(text="Мой профиль")]
+        [KeyboardButton(text="Поиск вакансий")], [KeyboardButton(text="Мои отклики")],
+        [KeyboardButton(text="Сохранённые вакансии")],
+        [KeyboardButton(text="Заполнить/Изменить профиль")], [KeyboardButton(text="Мой профиль")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 

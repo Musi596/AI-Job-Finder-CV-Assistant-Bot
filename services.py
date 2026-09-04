@@ -1,3 +1,5 @@
+import aiohttp
+import asyncio
 from ai_service import ask_ai
 from sql import *
 
@@ -21,9 +23,6 @@ async def store_employer_profile(telegram_id: int, data: dict):
 
 async def store_vacancy(employer_id: int, data: dict):
     await create_vacancy(employer_id, data)
-
-async def fetch_active_vacancies():
-    return await get_all_active_vacancies()
 
 async def apply_for_vacancy(vacancy_id: int, candidate_id: int) -> bool:
     if await is_already_applied(vacancy_id, candidate_id):
@@ -74,3 +73,54 @@ async def analyze_resume_with_ai(cv_text: str, vacancy_requirements: str) -> str
         f"3. Чего не хватает кандидату"
     )
     return await ask_ai(prompt)
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+async def fetch_and_store_hh_vacancies(query: str = "Python"):
+    url = "https://api.hh.ru/vacancies"
+    params = {"text": query, "per_page": 10}
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, params=params, headers=HEADERS) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    for item in data.get("items", []):
+                        salary_data = item.get("salary")
+                        salary = "Не указана"
+                        if salary_data:
+                            s_from = salary_data.get("from")
+                            s_to = salary_data.get("to")
+                            currency = salary_data.get("currency", "руб.")
+                            salary = f"от {s_from or ''} до {s_to or ''} {currency}".strip()
+
+                        v_data = {
+                            "external_id": f"hh_{item.get('id')}",
+                            "source": "HeadHunter",
+                            "title": item.get("name"),
+                            "company": item.get("employer", {}).get("name", "Не указано"),
+                            "salary": salary,
+                            "description": item.get("snippet", {}).get("requirement", "") or "Описание отсутствует",
+                            "url": item.get("alternate_url")
+                        }
+                        await save_external_vacancy(v_data)
+        except Exception as e:
+            print(f"Ошибка при сборе с HH: {e}")
+
+async def sync_external_vacancies():
+    print("🔄 Начинаем обновление внешних вакансий...")
+    keywords = ["Python", "JavaScript", "Data Analyst", "Project Manager"]
+    for kw in keywords:
+        await fetch_and_store_hh_vacancies(query=kw)
+    print("✅ Обновление внешних вакансий завершено!")
+
+async def fetch_all_combined_vacancies():
+    bot_vacancies = await get_all_active_vacancies()
+    for v in bot_vacancies:
+        v["source"] = "Внутренняя вакансия бота"
+        v["is_external"] = False
+
+    ext_vacancies = await get_external_vacancies()
+    for v in ext_vacancies:
+        v["is_external"] = True
+    return bot_vacancies + ext_vacancies

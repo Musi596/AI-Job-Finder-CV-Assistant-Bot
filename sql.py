@@ -93,6 +93,17 @@ async def create_tables():
             extracted_text TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS external_vacancies (
+                id SERIAL PRIMARY KEY,
+                external_id VARCHAR(100) UNIQUE,
+                source VARCHAR(50),      
+                title VARCHAR(255),
+                company VARCHAR(255),
+                salary VARCHAR(100),
+                description TEXT,
+                url VARCHAR(500),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         print('Таблицы успешно созданы')
     except Exception as er:
@@ -188,7 +199,8 @@ async def create_vacancy(employer_id: int, data: dict):
 async def get_all_active_vacancies():
     db = await connection()
     try:
-        return await db.fetch("SELECT * FROM vacancies WHERE status = 'active' ORDER BY created_at DESC;")
+        rows = await db.fetch("SELECT * FROM vacancies WHERE status = 'active' ORDER BY created_at DESC;")
+        return [dict(row) for row in rows]
     finally:
         await db.close()
 
@@ -383,3 +395,16 @@ async def get_latest_cv_file(candidate_id: int):
         """, candidate_id)
     finally:
         await db.close()
+
+async def save_external_vacancy(data: dict):
+    db = await connection()
+    await db.execute("""
+        INSERT INTO external_vacancies (external_id, source, title, company, salary, description, url)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (external_id) DO NOTHING
+    """, data["external_id"], data["source"], data["title"],data["company"], data["salary"], data["description"], data["url"])
+
+async def get_external_vacancies():
+    db = await connection()
+    rows = await db.fetch("SELECT * FROM external_vacancies ORDER BY created_at DESC LIMIT 20")
+    return [dict(r) for r in rows]

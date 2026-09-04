@@ -15,9 +15,7 @@ import services
 load_dotenv()
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
-dp = Dispatcher(storage=MemoryStorage())
-
-# --- FSM Классы ---
+dp = Dispatcher()
 
 class CandidateProfileFSM(StatesGroup):
     name = State()
@@ -52,8 +50,6 @@ class VacancyFSM(StatesGroup):
 class CVUploadFSM(StatesGroup):
     wait_file = State()
 
-# --- Системные и общие хэндлеры ---
-
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -64,8 +60,6 @@ async def process_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Действие отменено.", reply_markup=start_buttons())
 
-# --- Роли ---
-
 @dp.message(F.text == "Кандидат")
 async def select_candidate(message: Message):
     await services.register_candidate(message.from_user.id)
@@ -75,8 +69,6 @@ async def select_candidate(message: Message):
 async def select_employer(message: Message):
     await services.register_employer(message.from_user.id)
     await message.answer("Вы вошли как Работодатель.", reply_markup=employer_menu())
-
-# --- Профиль Кандидата ---
 
 @dp.message(F.text == "Мой профиль")
 async def show_candidate_profile(message: Message):
@@ -169,67 +161,50 @@ async def process_cand_exp(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Профиль успешно сохранен!", reply_markup=candidate_menu())
 
-# --- Загрузка Резюме (.txt) ---
-
-@dp.message(F.text == "📄 Загрузить резюме (TXT)")
-async def start_cv_upload(message: Message, state: FSMContext):
-    await state.set_state(CVUploadFSM.wait_file)
-    await message.answer("Отправьте ваш файл резюме в формате **.txt**:", reply_markup=cancel_keyboard())
-
-@dp.message(CVUploadFSM.wait_file, F.document)
-async def process_cv_file(message: Message, state: FSMContext):
-    doc = message.document
-    if not doc.file_name.endswith('.txt'):
-        await message.answer("Ошибка! Пожалуйста, отправьте файл в формате .txt")
-        return
-
-    os.makedirs("cv_uploads", exist_ok=True)
-    file_path = f"cv_uploads/{message.from_user.id}_{doc.file_name}"
-    
-    file_info = await bot.get_file(doc.file_id)
-    await bot.download_file(file_info.file_path, destination=file_path)
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            text = f.read()
-    except Exception:
-        with open(file_path, "r", encoding="cp1251", errors="ignore") as f:
-            text = f.read()
-
-    await services.store_cv_file(message.from_user.id, file_path, doc.file_name, text)
-    await state.clear()
-    await message.answer("📄 Текст резюме успешно прочитан и сохранен!", reply_markup=candidate_menu())
-
-# --- Поиск и Отклики ---
-
 @dp.message(F.text == "Поиск вакансий")
 async def search_vacancies(message: Message):
-    vacancies = await services.fetch_active_vacancies()
+    vacancies = await services.fetch_all_combined_vacancies()
+    
     if not vacancies:
-        await message.answer("Активных вакансий пока нет.")
+        await message.answer("Вакансий пока нет.")
         return
 
     for v in vacancies:
-        is_saved = await services.check_is_saved(message.from_user.id, v['id'])
-        msg = (
-            f"🏢 *{v['company_name']}*\n"
-            f"📌 *Вакансия:* {v['title']}\n"
-            f"📍 *Город:* {v['city']} ({v['job_type']})\n"
-            f"📊 *Уровень:* {v['experience_level']}\n"
-            f"💰 *ЗП:* {v['salary_min']} - {v['salary_max']}\n"
-            f"🛠 *Навыки:* {v['required_skills']}\n\n"
-            f"📋 *Требования:* {v['requirements']}"
-        )
-        await message.answer(msg, parse_mode="Markdown", reply_markup=vacancy_action_inline(v['id'], is_saved))
+        is_external = v.get("is_external", False)
+        source = v.get("source", "Бот")
+
+        if is_external:
+            msg = (
+                f"📌 *{v['title']}*\n"
+                f"🌐 *Источник:* {source}\n"
+                f"🏢 *Компания:* {v['company']}\n"
+                f"💰 *ЗП:* {v['salary']}\n\n"
+                f"📋 *Описание:* {v['description'][:300]}...\n\n"
+                f"🔗 [Открыть вакансию]({v['url']})"
+            )
+            await message.answer(msg, parse_mode="Markdown", disable_web_page_preview=True)
+        else:
+            is_saved = await services.check_is_saved(message.from_user.id, v['id'])
+            msg = (
+                f"🏢 *{v['company_name']}*\n"
+                f"📌 *Вакансия:* {v['title']}\n"
+                f"🌐 *Источник:* {source}\n"
+                f"📍 *Город:* {v['city']} ({v['job_type']})\n"
+                f"📊 *Уровень:* {v['experience_level']}\n"
+                f"💰 *ЗП:* {v['salary_min']} - {v['salary_max']}\n"
+                f"🛠 *Навыки:* {v['required_skills']}\n\n"
+                f"📋 *Требования:* {v['requirements']}"
+            )
+            await message.answer(msg, parse_mode="Markdown", reply_markup=vacancy_action_inline(v['id'], is_saved))
 
 @dp.callback_query(F.data.startswith("vac_apply_"))
 async def callback_apply(call: CallbackQuery):
     vac_id = int(call.data.split("_")[2])
     success = await services.apply_for_vacancy(vac_id, call.from_user.id)
     if success:
-        await call.answer("Отклик успешно отправлен!", show_alert=True)
+        await call.answer("Отклик успешно отправлен!")
     else:
-        await call.answer("Вы уже откликались на эту вакансию.", show_alert=True)
+        await call.answer("Вы уже откликались на эту вакансию.")
 
 @dp.callback_query(F.data.startswith("vac_save_"))
 async def callback_save(call: CallbackQuery):
@@ -269,8 +244,6 @@ async def show_my_applications(message: Message):
     for a in apps:
         res += f"📌 *{a['vacancy_title']}* в {a['company_name']}\nСтатус: `{a['status']}`\n\n"
     await message.answer(res, parse_mode="Markdown")
-
-# --- Работодатель ---
 
 @dp.message(F.text == "Мой профиль компании")
 async def show_employer_profile(message: Message):
@@ -324,8 +297,6 @@ async def process_emp_contacts(message: Message, state: FSMContext):
     await services.store_employer_profile(message.from_user.id, data)
     await state.clear()
     await message.answer("Профиль компании сохранен!", reply_markup=employer_menu())
-
-# --- FSM Создания Вакансии ---
 
 @dp.message(F.text == "Создать вакансию")
 async def start_vacancy_fsm(message: Message, state: FSMContext):
@@ -405,8 +376,6 @@ async def confirm_vacancy_creation(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("🎉 Вакансия успешно опубликована!", reply_markup=employer_menu())
 
-# --- Управление откликами работодателем ---
-
 @dp.message(F.text == "Мои вакансии")
 async def show_employer_vacancies(message: Message):
     vacs = await services.fetch_employer_vacancies(message.from_user.id)
@@ -421,7 +390,7 @@ async def list_apps_for_vac(call: CallbackQuery):
     vac_id = int(call.data.split("_")[3])
     apps = await services.fetch_vacancy_applications(vac_id)
     if not apps:
-        await call.answer("На эту вакансию пока нет откликов.", show_alert=True)
+        await call.answer("На эту вакансию пока нет откликов.")
         return
 
     await call.message.answer(f"📥 *Отклики на вакансию:*", parse_mode="Markdown")
@@ -480,7 +449,10 @@ async def change_status(call: CallbackQuery):
     await call.answer(f"Статус изменен: {status_text}")
     await call.message.edit_text(f"{call.message.text}\n\n✅ *Обновленный статус:* `{new_status}`", parse_mode="Markdown")
 
-# --- Запуск приложения ---
+async def background_sync_task(interval_hours: int = 12):
+    while True:
+        await services.sync_external_vacancies()
+        await asyncio.sleep(interval_hours * 3600)
 
 async def main():
     await create_tables()
